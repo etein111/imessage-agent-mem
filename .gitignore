@@ -51,23 +51,25 @@ memory_store.json
 .langgraph_api/
 
 # 历史版本代码（只保留重构后的代码）
-simple_chat.py
-multi_step_chat.py
-memory_chat.py
-pipeline_chat.py
-pipeline_chat_v3.py
-pipeline_chat_v4.py
-pipeline_chat_v5.py
-pipeline_chat_v6.py
-memory_store.py
-persona_loader.py
-tools.py
+# 只忽略根目录的旧文件
+/simple_chat.py
+/multi_step_chat.py
+/memory_chat.py
+/pipeline_chat.py
+/pipeline_chat_v3.py
+/pipeline_chat_v4.py
+/pipeline_chat_v5.py
+/pipeline_chat_v6.py
+/memory_store.py
+/persona_loader.py
+/tools.py
 
 # 旧配置
 langgraph_new.json
 
 # 旧的 personas 目录（使用 src/app/prompts/personas/）
-personas/
+# 只忽略根目录的旧 personas 目录
+/personas/
 
 # 本地开发相关文档（不推送）
 README_LOCAL.md
@@ -105,7 +107,8 @@ logs/
 *.swp
 
 # 软链接（不推送，由本地创建）
-app
+# 只忽略根目录的 app 软链接，不影响 src/app/
+/app
 
 # 测试文件
 .pytest_cache/
