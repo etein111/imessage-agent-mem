@@ -65,9 +65,9 @@ fi
 
 # 3. 启动后端
 echo -e "${GREEN}=== Starting LangGraph Backend ===${NC}"
-langgraph dev --host 0.0.0.0 --port $BACKEND_PORT --no-browser &
+langgraph dev --host 0.0.0.0 --port $BACKEND_PORT --no-browser --allow-blocking &
 BACKEND_PID=$!
-echo -e "Backend started with PID $BACKEND_PID"
+echo -e "Backend started with PID $BACKEND_PID (allow-blocking mode)"
 
 # 等待后端启动
 echo -e "${YELLOW}Waiting for backend to be ready...${NC}"

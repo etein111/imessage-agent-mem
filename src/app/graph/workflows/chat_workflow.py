@@ -27,6 +27,11 @@ from app.graph.nodes import (
     # Routing
     check_safety_in,
     route_after_safety,
+    
+    # System
+    check_system_command,
+    reset_conversation_node,
+    show_help_node,
 )
 
 
@@ -38,6 +43,11 @@ def create_chat_workflow() -> StateGraph:
     START
       ↓
     load_context (加载记忆)
+      ↓
+    check_system_command (检测系统指令) ← 新增
+      ├─ reset → reset_conversation → END
+      ├─ help → show_help → END
+      └─ normal → estimate_state
       ↓
     estimate_state (识别情绪&类型)
       ↓
@@ -62,6 +72,11 @@ def create_chat_workflow() -> StateGraph:
     
     # 添加节点
     workflow.add_node("load_context", load_context_node)
+    
+    # 系统节点 (新增)
+    workflow.add_node("reset_conversation", reset_conversation_node)
+    workflow.add_node("show_help", show_help_node)
+    
     workflow.add_node("estimate_state", estimate_state_node)
     workflow.add_node("plan_goal", plan_goal_node)
     workflow.add_node("safety_in", safety_in_node)
@@ -75,8 +90,22 @@ def create_chat_workflow() -> StateGraph:
     # 设置入口点
     workflow.set_entry_point("load_context")
     
-    # 添加固定边
-    workflow.add_edge("load_context", "estimate_state")
+    # 添加条件边: 系统指令检测 (新增)
+    workflow.add_conditional_edges(
+        "load_context",
+        check_system_command,
+        {
+            "reset": "reset_conversation",  # 重置对话
+            "help": "show_help",            # 显示帮助
+            "normal": "estimate_state"      # 正常对话流程
+        }
+    )
+    
+    # 系统指令处理后直接结束 (新增)
+    workflow.add_edge("reset_conversation", END)
+    workflow.add_edge("show_help", END)
+    
+    # 正常流程的固定边
     workflow.add_edge("estimate_state", "plan_goal")
     workflow.add_edge("plan_goal", "safety_in")
     

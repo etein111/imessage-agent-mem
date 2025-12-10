@@ -42,6 +42,13 @@ from .routing_nodes import (
     route_by_goal,
 )
 
+# 系统节点
+from .system_nodes import (
+    check_system_command,
+    reset_conversation_node,
+    show_help_node,
+)
+
 __all__ = [
     # Memory
     "load_context_node",
@@ -71,5 +78,10 @@ __all__ = [
     "route_by_dialogue_type",
     "route_by_emotion",
     "route_by_goal",
+    
+    # System
+    "check_system_command",
+    "reset_conversation_node",
+    "show_help_node",
 ]
 
