@@ -1,114 +1,144 @@
-# LangGraph 简单聊天示例
+# iMessage AI Agent - LangGraph Backend
 
-这是一个简单的 LangGraph 聊天机器人示例，展示了如何启动 LangGraph 开发服务器。
+基于 LangGraph 的智能对话 Agent 后端服务，支持记忆管理、状态估计、安全审查和工具调用。
 
-## 运行步骤
+## 🎯 特性
 
-### 1. 激活虚拟环境
+- ✅ **多版本架构** (V0-V6) - 从简单对话到完整功能
+- ✅ **模块化设计** - 重构后的标准化项目结构
+- ✅ **记忆管理** - 跨会话的持久化记忆
+- ✅ **安全守护** - 输入过滤和输出审核
+- ✅ **状态估计** - 情绪和对话类型识别
+- ✅ **目标引擎** - 智能对话策略规划
+- ✅ **工具集成** - 天气查询、时间获取、话术卡片
+- ✅ **人设系统** - 可配置的 AI 人格
+
+## 📁 项目结构
+
+```
+my_langgraph_app/
+├── src/app/                    # 重构后的模块化代码
+│   ├── config.py               # 配置管理
+│   ├── graph/                  # LangGraph 图定义
+│   │   ├── state.py            # 统一状态定义
+│   │   ├── nodes/              # 节点函数 (5个模块)
+│   │   └── workflows/          # 工作流定义
+│   ├── tools/                  # 工具封装
+│   ├── memory/                 # 记忆存储
+│   └── prompts/personas/       # 人设配置
+├── [旧版本文件]                # V0-V6 演进历史
+└── langgraph.json              # LangGraph 配置
+```
+
+## 🚀 快速开始
+
+### 1. 安装依赖
 
 ```bash
-cd /Users/weitianyi/Desktop/xbuddy/langgraph
-source .venv/bin/activate
+pip install -r requirements.txt
 ```
 
-### 2. 进入项目目录
+### 2. 配置环境变量
 
 ```bash
-cd my_langgraph_app
+# 设置 Google Cloud 认证
+export GOOGLE_CLOUD_PROJECT="your-project-id"
+export GOOGLE_APPLICATION_CREDENTIALS="path/to/credentials.json"
+
+# 选择 AI 人设（可选）
+export PERSONA_NAME="yunduo"  # 或 "youci"
 ```
 
-### 3. 启动开发服务器
+### 3. 启动服务
 
 ```bash
-langgraph dev
+# 启动 LangGraph 服务
+langgraph dev --host 0.0.0.0 --port 2024
+
+# 或使用脚本（包含前端）
+./run_with_monitor.sh
 ```
 
-默认情况下，服务器会：
-- 在 `http://127.0.0.1:2024` 启动
-- 自动打开浏览器（可以使用 `--no-browser` 禁用）
-- 支持热重载（代码修改后自动重启）
+### 4. 访问 API
 
-### 4. 访问前端界面
-
-启动后，浏览器会自动打开 LangGraph Studio 界面，你可以：
-- 查看和测试你的 graph
-- 与聊天机器人对话
-- 查看执行流程和状态
-
-## 配置选项
-
-### 使用自定义端口
-
-```bash
-langgraph dev --port 8000
-```
-
-### 禁用自动打开浏览器
-
-```bash
-langgraph dev --no-browser
-```
-
-### 使用 OpenAI API（可选）
-
-如果要使用真实的 GPT 模型，需要设置环境变量：
-
-```bash
-export OPENAI_API_KEY=your-api-key-here
-langgraph dev
-```
-
-或者创建 `.env` 文件：
-
-```
-OPENAI_API_KEY=your-api-key-here
-```
-
-## API 端点
-
-服务器启动后，你可以通过以下方式访问：
-
-- **前端界面**: http://127.0.0.1:2024
 - **API 文档**: http://127.0.0.1:2024/docs
 - **健康检查**: http://127.0.0.1:2024/health
 
-## 测试 API
+## 📊 可用的 Graph
 
-你可以使用 curl 测试 API：
+| Graph ID | 版本 | 功能 |
+|----------|------|------|
+| `simple_chat` | V0 | 基础对话 |
+| `memory_chat` | V1 | 带记忆管理 |
+| `pipeline_chat` | V2 | 多节点流水线 |
+| `pipeline_chat_v3` | V3 | + 安全守护 |
+| `pipeline_chat_v4` | V4 | + 状态估计 |
+| `pipeline_chat_v5` | V5 | + 目标引擎 |
+| `pipeline_chat_v6` | V6 | + 工具集成（完整版）|
 
+## 🎭 AI 人设
+
+### 云朵 (yunduo)
+表面傲娇的 AI 物种，爱猫，嘴硬心软
+
+### 由此 (youci)
+温和的拼图伙伴，倾听者，不评判
+
+切换人设：
 ```bash
-# 创建新的对话线程
-curl -X POST http://127.0.0.1:2024/threads
-
-# 发送消息
-curl -X POST http://127.0.0.1:2024/threads/{thread_id}/runs \
-  -H "Content-Type: application/json" \
-  -d '{
-    "assistant_id": "simple_chat",
-    "input": {
-      "messages": [{"role": "user", "content": "你好！"}]
-    }
-  }'
+export PERSONA_NAME=youci
 ```
 
-## 使用 Docker 运行（推荐用于联调）
+## 🔧 开发指南
 
-可以使用仓库根目录下提供的 `Dockerfile` 将整个 Agent 后端打包成容器：
+### 使用重构后的代码
 
-```bash
-# 在仓库根目录执行
-docker build -t cloud-buddy .
+```python
+# 导入状态
+from app.graph.state import PipelineState
 
-# 运行容器，并将必要的环境变量（如 Google Vertex AI 凭证）传入
-docker run \
-  -p 2024:2024 \
-  -e GOOGLE_CLOUD_PROJECT=your-project \
-  -e GOOGLE_CLOUD_LOCATION=us-central1 \
-  -e GOOGLE_APPLICATION_CREDENTIALS=/app/credentials.json \
-  -v $HOME/.config/gcloud/application_default_credentials.json:/app/credentials.json:ro \
-  cloud-buddy
+# 导入节点
+from app.graph.nodes import load_context_node, generate_reply_simple_node
+
+# 导入工作流
+from app.graph.workflows.chat_workflow import graph
+
+# 使用
+result = await graph.ainvoke({
+    "messages": [...],
+    "user_id": "user123",
+    "conversation_id": "conv456"
+})
 ```
 
-容器启动后，可以通过 `http://localhost:2024` 访问 LangGraph API，以及 `/docs` 接口文档。
+### 添加新功能
 
+1. **新节点**: 在 `src/app/graph/nodes/` 添加
+2. **新工具**: 在 `src/app/tools/` 添加
+3. **新人设**: 在 `src/app/prompts/personas/` 添加 `.md` 文件
+
+## 📚 文档
+
+- **REFACTORED_README.md** - 重构后架构详解
+- **V6_ARCHITECTURE.md** - V6 完整架构文档
+- **PERSONA_CONFIG.md** - 人设配置指南
+- **API_DOCS.md** - API 接口文档
+
+## 🔐 环境要求
+
+- Python 3.12+
+- Google Cloud 认证（用于 Gemini API）
+- LangGraph CLI 0.1.25+
+
+## 📝 License
+
+MIT
+
+## 🤝 Contributing
+
+欢迎贡献代码！请提交 Pull Request。
+
+---
+
+**Built with LangGraph** 🦜🔗
 
