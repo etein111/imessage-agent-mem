@@ -50,6 +50,36 @@ memory_store.json
 # LangGraph 缓存
 .langgraph_api/
 
+# 历史版本代码（只保留重构后的代码）
+simple_chat.py
+multi_step_chat.py
+memory_chat.py
+pipeline_chat.py
+pipeline_chat_v3.py
+pipeline_chat_v4.py
+pipeline_chat_v5.py
+pipeline_chat_v6.py
+memory_store.py
+persona_loader.py
+tools.py
+
+# 旧配置
+langgraph_new.json
+
+# 旧的 personas 目录（使用 src/app/prompts/personas/）
+personas/
+
+# 本地开发相关文档（不推送）
+README_LOCAL.md
+README_GITHUB.md
+V6_FILE_LIST.md
+V6_ARCHITECTURE.md
+GITHUB_PUSH_SUMMARY.md
+REFACTORING_SUMMARY.md
+REFACTORING_VERIFICATION.md
+REFACTORING_COMPLETE.md
+QUICK_USAGE.md
+
 # Gradio 前端（不推送）
 gradio_app.py
 
