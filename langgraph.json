@@ -1,0 +1,18 @@
+{
+  "dependencies": [
+    "langchain-core",
+    "langchain-google-vertexai"
+  ],
+  "graphs": {
+    "simple_chat": "./simple_chat.py:graph",
+    "multi_step_chat": "./multi_step_chat.py:graph",
+    "memory_chat": "./memory_chat.py:graph",
+    "pipeline_chat": "./pipeline_chat.py:graph",
+    "pipeline_chat_v3": "./pipeline_chat_v3.py:graph",
+    "pipeline_chat_v4": "./pipeline_chat_v4.py:graph",
+    "pipeline_chat_v5": "./pipeline_chat_v5.py:graph",
+    "pipeline_chat_v6": "./pipeline_chat_v6.py:graph"
+  },
+  "env": ".env"
+}
+

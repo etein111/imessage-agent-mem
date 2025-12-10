@@ -1,0 +1,87 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual Environment
+.venv/
+venv/
+ENV/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# 环境变量和敏感信息
+.env
+.env.local
+*.key
+*.pem
+credentials.json
+
+# 用户数据
+memory_store.json
+
+# LangGraph 缓存
+.langgraph_api/
+
+# Gradio 前端（不推送）
+gradio_app.py
+
+# 监控面板（不推送）
+monitor_app.py
+monitor_app_v2.py
+MONITOR_GUIDE.md
+MONITOR_GUIDE_V2.md
+
+# 示例客户端（可选，暂时不推送）
+example_remote_client.py
+
+# 运行脚本（可选，可以推送）
+# run_*.sh
+
+# 日志
+*.log
+logs/
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
+
+# 软链接（不推送，由本地创建）
+app
+
+# 测试文件
+.pytest_cache/
+.coverage
+htmlcov/
+
+# 文档生成
+_build/
+
