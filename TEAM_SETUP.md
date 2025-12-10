@@ -143,7 +143,7 @@ python3 -c "from app.config import get_system_prompt; print('✅ 人设加载成
 curl -X POST "http://127.0.0.1:2024/threads/test-thread/runs/stream" \
   -H "Content-Type: application/json" \
   -d '{
-    "assistant_id": "pipeline_chat_v6",
+    "assistant_id": "agent",
     "input": {
       "messages": [{"role": "user", "content": "你好"}],
       "user_id": "test_user"

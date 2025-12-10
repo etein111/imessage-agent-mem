@@ -7,7 +7,7 @@
 
 - **Base URL**: `http://localhost:2024` (本地开发) / `https://api.your-domain.com` (生产环境)
 - **API 协议**: REST API + Server-Sent Events (SSE)
-- **Graph ID (Assistant ID)**: `pipeline_chat_v6`
+- **Graph ID (Assistant ID)**: `agent`
 
 ---
 
@@ -23,7 +23,7 @@
 | 参数名 | 类型 | 必填 | 说明 |
 | :--- | :--- | :--- | :--- |
 | `thread_id` | string | 是 | 会话 ID (UUID)，由前端生成并维护，用于标识一次连续的对话上下文。 |
-| `assistant_id` | string | 是 | 固定为 `pipeline_chat_v6`。 |
+| `assistant_id` | string | 是 | 固定为 `agent`。 |
 | `stream_mode` | list | 是 | 固定为 `["messages", "updates"]`，以同时获取回复内容和内部状态更新。 |
 | `input` | object | 是 | 传递给 Agent 的初始状态数据。 |
 
@@ -218,7 +218,7 @@ const client = new Client({ apiUrl: "http://localhost:2024" });
 async function sendMessage(userMessage, threadId) {
   const stream = await client.runs.stream(
     threadId,
-    "pipeline_chat_v6",
+    "agent",
     {
       input: {
         messages: [{ role: "user", content: userMessage }],
@@ -263,7 +263,7 @@ function useChatStream() {
   const sendMessage = async (userInput: string, threadId: string) => {
     setCurrentMessage(""); // 重置，准备接收新回复
     
-    const stream = await client.runs.stream(threadId, "pipeline_chat_v6", {
+    const stream = await client.runs.stream(threadId, "agent", {
       input: { messages: [{ role: "user", content: userInput }] },
       streamMode: ["messages", "updates"],
     });
