@@ -47,6 +47,8 @@ from .system_nodes import (
     check_system_command,
     reset_conversation_node,
     show_help_node,
+    list_personas_node,
+    switch_persona_node,
 )
 
 __all__ = [
@@ -83,5 +85,7 @@ __all__ = [
     "check_system_command",
     "reset_conversation_node",
     "show_help_node",
+    "list_personas_node",
+    "switch_persona_node",
 ]
 

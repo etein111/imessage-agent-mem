@@ -9,6 +9,7 @@ from typing import Optional
 
 # ==================== 路径配置 ====================
 PROJECT_ROOT = Path(__file__).parent.parent.parent
+BASE_DIR = PROJECT_ROOT  # 别名，供其他模块使用
 PERSONAS_DIR = PROJECT_ROOT / "src" / "app" / "prompts" / "personas"
 MEMORY_FILE = PROJECT_ROOT / "memory_store.json"
 

@@ -33,9 +33,21 @@ async def generate_reply_simple_node(state: PipelineState, config=None) -> Dict[
     """
     生成普通对话回复（不使用工具）
     来源: pipeline_chat_v6.py
+    
+    功能扩展：
+    - 支持使用用户个性化提示词（如果有current_persona）
+    - 否则使用默认系统提示词
     """
     model = await get_model()
-    system_prompt = get_system_prompt()
+    
+    # 检查是否有个性化提示词（新增）
+    current_persona = state.get("current_persona")
+    if current_persona:
+        system_prompt = current_persona
+        print("✅ 使用个性化提示词")
+    else:
+        system_prompt = get_system_prompt()
+        print("ℹ️  使用默认提示词")
     
     # 准备消息
     messages = list(state.get("messages", []))
@@ -58,9 +70,19 @@ async def generate_reply_with_tools_node(state: PipelineState, config=None) -> D
     """
     结合工具结果生成回复
     来源: pipeline_chat_v6.py
+    
+    功能扩展：
+    - 支持使用用户个性化提示词（如果有current_persona）
     """
     model = await get_model()
-    system_prompt = get_system_prompt()
+    
+    # 检查是否有个性化提示词（新增）
+    current_persona = state.get("current_persona")
+    if current_persona:
+        system_prompt = current_persona
+    else:
+        system_prompt = get_system_prompt()
+    
     tool_results = state.get("tool_results", {})
     
     # 准备消息

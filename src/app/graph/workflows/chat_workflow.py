@@ -32,6 +32,8 @@ from app.graph.nodes import (
     check_system_command,
     reset_conversation_node,
     show_help_node,
+    list_personas_node,
+    switch_persona_node,
 )
 
 
@@ -47,6 +49,8 @@ def create_chat_workflow() -> StateGraph:
     check_system_command (检测系统指令) ← 新增
       ├─ reset → reset_conversation → END
       ├─ help → show_help → END
+      ├─ list_personas → list_personas → END
+      ├─ switch_persona → switch_persona → END
       └─ normal → estimate_state
       ↓
     estimate_state (识别情绪&类型)
@@ -76,6 +80,8 @@ def create_chat_workflow() -> StateGraph:
     # 系统节点 (新增)
     workflow.add_node("reset_conversation", reset_conversation_node)
     workflow.add_node("show_help", show_help_node)
+    workflow.add_node("list_personas", list_personas_node)
+    workflow.add_node("switch_persona", switch_persona_node)
     
     workflow.add_node("estimate_state", estimate_state_node)
     workflow.add_node("plan_goal", plan_goal_node)
@@ -95,15 +101,19 @@ def create_chat_workflow() -> StateGraph:
         "load_context",
         check_system_command,
         {
-            "reset": "reset_conversation",  # 重置对话
-            "help": "show_help",            # 显示帮助
-            "normal": "estimate_state"      # 正常对话流程
+            "reset": "reset_conversation",     # 重置对话
+            "help": "show_help",               # 显示帮助
+            "list_personas": "list_personas",  # 列出提示词
+            "switch_persona": "switch_persona",# 切换提示词
+            "normal": "estimate_state"         # 正常对话流程
         }
     )
     
     # 系统指令处理后直接结束 (新增)
     workflow.add_edge("reset_conversation", END)
     workflow.add_edge("show_help", END)
+    workflow.add_edge("list_personas", END)
+    workflow.add_edge("switch_persona", END)
     
     # 正常流程的固定边
     workflow.add_edge("estimate_state", "plan_goal")

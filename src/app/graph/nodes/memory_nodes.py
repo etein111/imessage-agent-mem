@@ -12,8 +12,12 @@ from app.memory.session_store import SimpleMemoryStore
 # ==================== 加载上下文节点 ====================
 async def load_context_node(state: PipelineState) -> Dict[str, Any]:
     """
-    从 Context Store 加载用户的短期记忆
+    从 Context Store 加载用户的短期记忆和个性化提示词
     来源: pipeline_chat.py
+    
+    功能扩展：
+    - 加载短期记忆
+    - 加载用户当前激活的提示词（如果有）
     """
     user_id = state.get("user_id", "default_user")
     conversation_id = state.get("conversation_id", "default_conversation")
@@ -21,7 +25,27 @@ async def load_context_node(state: PipelineState) -> Dict[str, Any]:
     # 从存储中获取记忆
     short_term_memory = SimpleMemoryStore.get_short_term_memory(user_id, conversation_id)
     
-    return {"short_term_memory": short_term_memory}
+    # 加载用户的个性化提示词（新增）
+    current_persona_content = None
+    try:
+        from app.prompts.prompt_service import prompt_service
+        active_persona = prompt_service.get_user_active_persona(user_id)
+        
+        if active_persona:
+            current_persona_content = active_persona['content']
+            print(f"✅ 已为用户 {user_id} 加载提示词: {active_persona['name']}")
+        else:
+            print(f"ℹ️  用户 {user_id} 未设置提示词，使用默认提示词")
+    except Exception as e:
+        print(f"⚠️  加载提示词失败: {e}，使用默认提示词")
+    
+    result = {"short_term_memory": short_term_memory}
+    
+    # 如果有个性化提示词，添加到state
+    if current_persona_content:
+        result["current_persona"] = current_persona_content
+    
+    return result
 
 
 # ==================== 保存记忆节点 ====================
