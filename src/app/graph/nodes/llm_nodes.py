@@ -245,3 +245,49 @@ AI: {ai_output}
     response = await model.ainvoke([HumanMessage(content=summary_prompt)], config={"callbacks": []})
     return response.content.strip()
 
+
+async def process_overflow_message_node(overflow_messages: list) -> str:
+    """
+    处理溢出的短期记忆：筛选有价值信息，生成陈述性摘要
+    """
+    if not overflow_messages:
+        return None
+
+    model = await get_model()
+
+    # 格式化输入
+    context_text = ""
+    for msg in overflow_messages:
+        role = "User" if msg['role'] == 'user' else "AI"
+        time_str = msg.get('time_str', '')
+        context_text += f"[{time_str}] {role}: {msg['content']}\n"
+
+    prompt = f"""你是一个记忆整理专家。以下是用户对话中即将被归档的片段。
+    用户的输入通常是碎片化的日记或小记。
+
+    【待处理片段】
+    {context_text}
+
+    【任务】
+    1. 忽略无意义的闲聊（如"哈哈"、"好的"、"晚安"），除非它们包含强烈情绪。
+    2. 提取有价值的实体关系（人名、地点、事件）和用户状态（情绪、观点）。
+    3. 将提取的内容重写为独立、完整的陈述句（Subject-Predicate-Object）。
+    4. 如果没有有价值信息，请直接输出 "NO_INFO"。
+
+    【示例】
+    输入：
+    [08:00] User: 烦死了
+    [08:01] User: 又是那个经理
+    [08:02] User: 非要红色的Logo
+    输出：
+    用户对经理感到愤怒，因为经理坚持要求红色的Logo。
+
+    请输出摘要："""
+
+    response = await model.ainvoke([HumanMessage(content=prompt)])
+    content = response.content.strip()
+
+    if content == "NO_INFO":
+        return None
+
+    return content
