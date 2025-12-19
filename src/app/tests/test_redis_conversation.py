@@ -42,16 +42,30 @@ class TestRedisMemoryStore:
         self.client.rpush(self.key, json.dumps(message))
 
     def check_and_extract_overflow(self) -> List[Dict]:
-        """检查是否达到硬阈值(7)，如果达到，弹出2条"""
+        """检查是否达到硬阈值，如果达到，弹出 batch_size 条"""
         current_len = self.client.llen(self.key)
 
         if current_len >= self.hard_limit:
             print(Fore.YELLOW + f"\n[系统] ⚠️ 达到硬阈值 ({current_len}/{self.hard_limit})，触发溢出清洗...")
-            # 弹出最旧的 batch_size 条
-            popped_raw = self.client.lpop(self.key, self.batch_size)
+
+
+            # 1. 获取最旧的 batch_size 条数据 (索引 0 到 batch_size-1)
+            popped_raw = self.client.lrange(self.key, 0, self.batch_size - 1)
+
+            # 2. 如果获取到了数据，执行修剪，只保留剩下的数据
             if popped_raw:
-                if isinstance(popped_raw, str): popped_raw = [popped_raw]
-                return [json.loads(msg) for msg in popped_raw]
+                self.client.ltrim(self.key, self.batch_size, -1)
+
+                # 解析数据
+                result = []
+                for msg in popped_raw:
+                    if isinstance(msg, str):
+                        result.append(json.loads(msg))
+                    else:
+                        result.append(json.loads(msg.decode('utf-8')))
+                return result
+
+
         return []
 
     def get_context(self) -> List[Dict]:

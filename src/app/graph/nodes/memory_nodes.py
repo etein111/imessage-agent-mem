@@ -106,7 +106,11 @@ async def save_memory_node(state: PipelineState, config=None) -> Dict[str, Any]:
         # 这里 len(batch_overflow) 应该是 10
         print(f" 检测到 Redis 达到阈值，批量清洗 {len(batch_overflow)} 条消息...")
 
-        consolidated_fact = await process_overflow_message_node(batch_overflow)
+        prev_summary = redis_store.get_last_summary(user_id, conversation_id)
+        if prev_summary:
+            print(f"🔗 关联前情提要: {prev_summary[:20]}...")
+
+        consolidated_fact = await process_overflow_message_node(batch_overflow, prev_summary=prev_summary)
 
         if consolidated_fact:
             print(f" [批量] 提取到有价值记忆: {consolidated_fact}")
@@ -114,6 +118,8 @@ async def save_memory_node(state: PipelineState, config=None) -> Dict[str, Any]:
             # TODO: 这里调用 Qdrant 接口存入长期记忆
             # 让 LLM 返回 JSON List，然后这里循环 add 到 qdrant
             # await qdrant_store.add_texts(user_id, [consolidated_fact])
+            redis_store.set_last_summary(user_id, conversation_id, consolidated_fact)
+
         else:
             print(" [批量] 溢出消息判断为无价值/闲聊，直接丢弃。")
 
