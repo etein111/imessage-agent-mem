@@ -3,7 +3,7 @@ LLM 调用节点
 所有与大模型交互的节点函数
 """
 import asyncio
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 try:
     from pydantic import BaseModel, Field
@@ -28,67 +28,56 @@ async def get_model():
     return _model
 
 
-# ==================== 生成回复节点 (简单版) ====================
+# ==================== 生成回复节点 ====================
 async def generate_reply_simple_node(state: PipelineState, config=None) -> Dict[str, Any]:
     """
     生成普通对话回复（不使用工具）
-    来源: pipeline_chat_v6.py
-    
-    功能扩展：
-    - 支持使用用户个性化提示词（如果有current_persona）
-    - 否则使用默认系统提示词
     """
     model = await get_model()
-    
-    # 检查是否有个性化提示词（新增）
+
+    # 检查是否有个性化提示词
     current_persona = state.get("current_persona")
     if current_persona:
         system_prompt = current_persona
-        print("✅ 使用个性化提示词")
     else:
         system_prompt = get_system_prompt()
-        print("ℹ️  使用默认提示词")
-    
+
     # 准备消息
     messages = list(state.get("messages", []))
-    
+
+
+    prev_summary = state.get("prev_summary", "")
+    if prev_summary:
+        system_prompt += f"\n\n【前情提要】\n{prev_summary}"
+
     # 添加系统提示词
     if not messages or not isinstance(messages[0], SystemMessage):
-        # 添加目标指令（如果有）
         goal_instruction = state.get("goal_instruction", "")
         full_prompt = f"{system_prompt}\n\n{goal_instruction}" if goal_instruction else system_prompt
         messages.insert(0, SystemMessage(content=full_prompt))
-    
+
     # 调用模型
     response = await model.ainvoke(messages, config=config)
-    
+
     return {"messages": [response]}
 
 
-# ==================== 生成回复节点 (带工具结果) ====================
+# ==================== 生成回复节点 ====================
 async def generate_reply_with_tools_node(state: PipelineState, config=None) -> Dict[str, Any]:
     """
     结合工具结果生成回复
-    来源: pipeline_chat_v6.py
-    
-    功能扩展：
-    - 支持使用用户个性化提示词（如果有current_persona）
     """
     model = await get_model()
-    
-    # 检查是否有个性化提示词（新增）
+
     current_persona = state.get("current_persona")
     if current_persona:
         system_prompt = current_persona
     else:
         system_prompt = get_system_prompt()
-    
+
     tool_results = state.get("tool_results", {})
-    
-    # 准备消息
     messages = list(state.get("messages", []))
-    
-    # 构建包含工具结果的提示
+
     tool_context = "\n".join([f"{k}: {v}" for k, v in tool_results.items()])
     enhanced_prompt = f"""{system_prompt}
 
@@ -96,29 +85,15 @@ async def generate_reply_with_tools_node(state: PipelineState, config=None) -> D
 {tool_context}
 
 请根据以上工具返回的信息，自然地回复用户。"""
-    
+
     messages.insert(0, SystemMessage(content=enhanced_prompt))
-    
-    # 调用模型
     response = await model.ainvoke(messages, config=config)
-    
     return {"messages": [response]}
 
 
 # ==================== 状态估计节点 ====================
-class EmotionClassification(BaseModel):
-    """情绪分类结果"""
-    emotion: str = Field(description="用户情绪: happy, sad, stressed, bored, neutral等")
-    dialogue_type: str = Field(description="对话类型: small_talk, support, task, onboarding等")
-
 async def estimate_state_node(state: PipelineState, config=None) -> Dict[str, Any]:
-    """
-    估计用户情绪和对话类型
-    来源: pipeline_chat_v4.py
-    """
     model = await get_model()
-    
-    # 获取上下文
     short_term_memory = state.get("short_term_memory", [])
     messages = state.get("messages", [])
     current_user_msg = ""
@@ -126,10 +101,9 @@ async def estimate_state_node(state: PipelineState, config=None) -> Dict[str, An
         if isinstance(msg, HumanMessage):
             current_user_msg = msg.content
             break
-    
-    # 构建分类提示
+
     memory_context = "\n".join(short_term_memory) if short_term_memory else "无历史记录"
-    
+
     prompt = f"""你是一个情绪和对话类型分类专家。请分析用户的当前状态。
 
 【历史记忆】
@@ -139,26 +113,24 @@ async def estimate_state_node(state: PipelineState, config=None) -> Dict[str, An
 {current_user_msg}
 
 请分析:
-1. 用户情绪 (emotion): happy（开心）, sad（悲伤）, stressed（压力大）, bored（无聊）, neutral（中性）
-2. 对话类型 (dialogue_type): small_talk（闲聊）, support（需要支持）, task（任务型）, onboarding（初次见面）, flirt（调情）, conflict（冲突）
+1. 用户情绪 (emotion): happy, sad, stressed, bored, neutral
+2. 对话类型 (dialogue_type): small_talk, support, task, onboarding
 
 输出格式:
 emotion: <情绪>
 dialogue_type: <类型>"""
-    
-    response = await model.ainvoke([HumanMessage(content=prompt)], config={"callbacks": []})
-    
-    # 解析输出
+
+    response = await model.ainvoke([HumanMessage(content=prompt)])
     content = response.content.lower()
     emotion = "neutral"
     dialogue_type = "small_talk"
-    
+
     for line in content.split("\n"):
         if "emotion:" in line:
             emotion = line.split(":")[-1].strip()
         elif "dialogue_type:" in line:
             dialogue_type = line.split(":")[-1].strip()
-    
+
     return {
         "current_emotion": emotion,
         "dialogue_type": dialogue_type
@@ -167,28 +139,21 @@ dialogue_type: <类型>"""
 
 # ==================== 目标规划节点 ====================
 async def plan_goal_node(state: PipelineState, config=None) -> Dict[str, Any]:
-    """
-    规划对话目标和策略
-    来源: pipeline_chat_v5.py / pipeline_chat_v6.py
-    """
     model = await get_model()
-    
-    # 获取上下文
     emotion = state.get("current_emotion", "neutral")
     dialogue_type = state.get("dialogue_type", "small_talk")
     short_term_memory = state.get("short_term_memory", [])
     messages = state.get("messages", [])
-    
+
     current_user_msg = ""
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
             current_user_msg = msg.content
             break
-    
-    memory_context = "\n".join(short_term_memory[-3:]) if short_term_memory else "无历史"
-    
-    prompt = f"""你是一个对话策略规划专家。根据用户状态规划对话目标。
 
+    memory_context = "\n".join(short_term_memory[-3:]) if short_term_memory else "无历史"
+
+    prompt = f"""你是一个对话策略规划专家。
 【用户情绪】{emotion}
 【对话类型】{dialogue_type}
 【最近记忆】{memory_context}
@@ -203,15 +168,13 @@ async def plan_goal_node(state: PipelineState, config=None) -> Dict[str, Any]:
 tool: <工具名或none>
 goal: <目标>
 instruction: <具体指导>"""
-    
-    response = await model.ainvoke([HumanMessage(content=prompt)], config={"callbacks": []})
-    
-    # 解析输出
+
+    response = await model.ainvoke([HumanMessage(content=prompt)])
     content = response.content.lower()
     tool_to_call = None
     current_goal = "casual_chat"
     goal_instruction = ""
-    
+
     for line in content.split("\n"):
         if "tool:" in line:
             tool = line.split(":")[-1].strip()
@@ -221,7 +184,7 @@ instruction: <具体指导>"""
             current_goal = line.split(":")[-1].strip()
         elif "instruction:" in line:
             goal_instruction = line.split(":")[-1].strip()
-    
+
     return {
         "current_goal": current_goal,
         "goal_instruction": goal_instruction,
@@ -231,66 +194,85 @@ instruction: <具体指导>"""
 
 # ==================== 记忆摘要生成 ====================
 async def summarize_interaction(model, user_input: str, ai_output: str) -> str:
-    """
-    将用户消息和AI回复压缩成摘要
-    来源: memory_chat.py
-    """
     summary_prompt = f"""请将以下对话压缩成一条简短摘要（30字以内）：
-
 用户: {user_input}
 AI: {ai_output}
-
 摘要:"""
-    
-    response = await model.ainvoke([HumanMessage(content=summary_prompt)], config={"callbacks": []})
+    response = await model.ainvoke([HumanMessage(content=summary_prompt)])
     return response.content.strip()
 
 
-async def consolidate_memory_node(overflow_messages: list, prev_summary: str = "") -> str:
+# ==================== 1. 意图识别节点 (识别用户生成碎片的意图) ====================
+async def check_fragment_intent_node(last_user_message: str) -> bool:
     """
-    处理溢出的短期记忆，支持传入前情提要以解决指代不明问题
+    判断用户是否有生成记忆碎片的意图（显式或隐式）
     """
-    if not overflow_messages:
-        return None
-
     model = await get_model()
 
-    # 格式化输入
-    context_text = ""
-    for msg in overflow_messages:
-        role = "User" if msg['role'] == 'user' else "AI"
-        # 兼容处理可能没有 time_str 的情况
-        time_str = msg.get('time_str', '')
-        context_text += f"[{time_str}] {role}: {msg['content']}\n"
+    prompt = f"""
+    请判断用户的这句话是否表达了想要“记录”、“留念”、“总结今天”、“保存记忆”或“结束话题并整理”的意图。
 
-    # === 动态构建 Prompt ===
-    context_instruction = ""
-    if prev_summary:
-        context_instruction = f"""
-    【前情提要】(仅作背景参考，不要重复生成)
-    {prev_summary}
-    ----------------
+    用户输入: "{last_user_message}"
+
+    如果是，请输出 YES。
+    如果只是普通聊天，请输出 NO。
+    只输出 YES 或 NO。
     """
 
-    prompt = f"""你是一个记忆整理专家。以下是用户对话中即将被归档的片段。
+    response = await model.ainvoke([HumanMessage(content=prompt)])
+    return "YES" in response.content.strip().upper()
 
-    {context_instruction}
-    【待处理最新片段】
-    {context_text}
 
-    【任务】
-    1. 结合【前情提要】（如有）解决片段中的指代问题（例如将"他"还原为具体人名）。
-    2. 忽略无意义的闲聊。
-    3. 提取有价值的实体关系和情绪。
-    4. 将提取的内容重写为独立、完整的陈述句。
-    5. 如果结合前情后依然判定无价值，输出 "NO_INFO"。
+# ==================== 碎片生成节点 (识别用户需求) ====================
+async def generate_fragment_node(recent_messages: list) -> str:
+    """
+    基于最近3轮对话生成记忆碎片
+    """
+    if not recent_messages: return ""
+    model = await get_model()
 
-    请输出摘要："""
+    context = "\n".join([f"{m['role']}: {m['content']}" for m in recent_messages])
+
+    prompt = f"""
+    你是一个敏锐的记录员。请根据以下最近的对话片段，提炼出一个【记忆碎片】。
+
+    【对话片段】
+    {context}
+
+    【要求】
+    1. 捕捉核心事件、情绪和结局。
+    2. 语言风格：简洁、深刻、像日记的一角。
+    3. 格式：直接输出内容，不要标题。
+    """
 
     response = await model.ainvoke([HumanMessage(content=prompt)])
-    content = response.content.strip()
+    return response.content.strip()
 
-    if content == "NO_INFO":
-        return None
 
-    return content
+# ==================== 摘要生成节点 (用于溢出归档) ====================
+async def consolidate_memory_node(overflow_messages: list, prev_summary: str = "") -> str:
+    """
+    处理溢出的10轮对话，生成摘要
+    可以通过调整prompt，方便长期记忆提取元数据等信息
+    """
+    if not overflow_messages: return None
+    model = await get_model()
+
+    context_text = "\n".join(
+        [f"[{msg.get('time_str', '')}] {msg['role']}: {msg['content']}" for msg in overflow_messages])
+
+    bg_info = f"【前情提要】\n{prev_summary}\n" if prev_summary else ""
+
+    prompt = f"""请将以下对话总结为一段简练的陈述句摘要。
+
+    {bg_info}
+    【待归档对话】
+    {context_text}
+
+    要求：结合前情解决指代问题，保留关键事实和情绪变化。
+    """
+
+    response = await model.ainvoke([HumanMessage(content=prompt)])
+    return response.content.strip()
+
+

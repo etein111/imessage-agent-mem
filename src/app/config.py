@@ -5,7 +5,10 @@
 import os
 from pathlib import Path
 from typing import Optional
+from langchain_openai import ChatOpenAI
+from dotenv import load_dotenv
 
+load_dotenv()
 
 # ==================== 路径配置 ====================
 PROJECT_ROOT = Path(__file__).parent.parent.parent
@@ -20,26 +23,44 @@ def get_env(key: str, default: Optional[str] = None) -> str:
     return os.getenv(key, default)
 
 
-# ==================== LLM 配置 ====================
-def get_llm_model():
-    """获取 LLM 模型实例"""
-    from langchain_google_vertexai import ChatVertexAI, HarmBlockThreshold, HarmCategory
-    
-    model_name = get_env("LLM_MODEL", "gemini-2.0-flash-exp")
-    temperature = float(get_env("LLM_TEMPERATURE", "0.7"))
-    
-    return ChatVertexAI(
-        model_name=model_name,
-        temperature=temperature,
-        max_output_tokens=2048,
-        safety_settings={
-            HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
-            HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
-        },
-    )
+# # ==================== LLM 配置 ====================
+# def get_llm_model():
+#     """获取 LLM 模型实例"""
+#     from langchain_google_vertexai import ChatVertexAI, HarmBlockThreshold, HarmCategory
+#
+#     model_name = get_env("LLM_MODEL", "gemini-2.0-flash-exp")
+#     temperature = float(get_env("LLM_TEMPERATURE", "0.7"))
+#
+#     return ChatVertexAI(
+#         model_name=model_name,
+#         temperature=temperature,
+#         max_output_tokens=2048,
+#         safety_settings={
+#             HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_NONE,
+#             HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_NONE,
+#             HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_NONE,
+#             HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_NONE,
+#         },
+#     )
 
+def get_llm_model():
+    """
+    获取 LLM 模型实例
+    """
+    api_key = os.getenv("API_KEY")
+    base_url = os.getenv("BASE_URL")
+    model_name = os.getenv("CHAT_MODEL")
+
+    if not api_key:
+        raise ValueError("未找到 API_KEY，请检查 .env 文件")
+
+    return ChatOpenAI(
+        model=model_name,
+        api_key=api_key,
+        base_url=base_url,
+        temperature=0.7,
+        streaming=False # 根据需要开启
+    )
 
 # ==================== 人设配置 ====================
 def get_system_prompt() -> str:
@@ -49,7 +70,7 @@ def get_system_prompt() -> str:
     """
     from app.memory.persona_loader import load_persona_from_env
     
-    return load_persona_from_env(default="yunduo")
+    return load_persona_from_env(default="youci")
 
 
 # ==================== Google Cloud 配置 ====================
