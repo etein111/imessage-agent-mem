@@ -4,8 +4,8 @@
 """
 from langgraph.graph import StateGraph, END
 
-from app.graph.state import PipelineState
-from app.graph.nodes import (
+from src.app.graph.state import PipelineState
+from src.app.graph.nodes import (
     # Memory
     load_context_node,
     save_memory_node,

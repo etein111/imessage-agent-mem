@@ -10,11 +10,11 @@ src_path = os.path.abspath(os.path.join(current_dir, "../../"))
 if src_path not in sys.path:
     sys.path.insert(0, src_path)
 
-from app.memory.redis_store import redis_store
-from app.graph.nodes.memory_nodes import load_context_node, save_memory_node
-from app.graph.nodes.llm_nodes import generate_reply_simple_node
-from app.graph.state import PipelineState
-from langchain_core.messages import HumanMessage, AIMessage
+from src.app.memory.redis_store import redis_store
+from src.app.graph.nodes.memory_nodes import load_context_node, save_memory_node
+from src.app.graph.nodes.llm_nodes import generate_reply_simple_node
+from src.app.graph.state import PipelineState
+from langchain_core.messages import HumanMessage
 
 init(autoreset=True)
 

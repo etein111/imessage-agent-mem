@@ -28,7 +28,7 @@ class PipelineState(TypedDict):
     """完整流水线状态 - 包含所有功能"""
     # 核心消息流
     messages: Annotated[Sequence[BaseMessage], add_messages]
-
+    
     # 上下文信息
     user_id: str
     conversation_id: str
@@ -45,15 +45,15 @@ class PipelineState(TypedDict):
 
     # 安全标记 (V3)
     safety_status: Optional[str]  # "safe" | "unsafe" | "rewritten"
-
+    
     # 状态估计 (V4)
     current_emotion: Optional[str]  # happy, sad, stressed, bored, neutral
     dialogue_type: Optional[str]    # small_talk, support, task, onboarding, flirt, conflict
-
+    
     # 目标规划 (V5)
     current_goal: Optional[str]     # cheer_up, collect_profile, deep_talk, light_task, casual_chat
     goal_instruction: Optional[str]  # 目标具体指令
-
+    
     # 工具集成 (V6)
     tool_results: Optional[Dict[str, Any]]  # 工具执行结果
     tool_to_call: Optional[str]             # 计划调用的工具名
@@ -96,6 +96,8 @@ def create_initial_state(
         "goal_instruction": None,
         "tool_results": None,
         "tool_to_call": None,
+        'long_term_memory': [],
+        'prev_summary': None,
     }
     return state
 

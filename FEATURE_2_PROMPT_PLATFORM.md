@@ -267,7 +267,7 @@ app/config.py                 # 添加 BASE_DIR
 ### PromptService API
 
 ```python
-from app.prompts.prompt_service import prompt_service
+from src.app.prompts import prompt_service
 
 # 创建提示词
 persona_id = prompt_service.create_persona(

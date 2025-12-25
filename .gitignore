@@ -108,7 +108,7 @@ logs/
 
 # 软链接（不推送，由本地创建）
 # 只忽略根目录的 app 软链接，不影响 src/app/
-/app
+/src/app
 
 # 测试文件
 .pytest_cache/

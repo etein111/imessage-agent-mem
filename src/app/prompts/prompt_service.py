@@ -3,12 +3,10 @@
 管理AI人格/提示词的CRUD操作
 """
 import sqlite3
-import json
-from typing import List, Optional, Dict, Tuple
+from typing import List, Optional, Dict
 from pathlib import Path
-from datetime import datetime
 
-from app.config import BASE_DIR
+from src.app.config import BASE_DIR
 
 
 # 数据库文件路径
