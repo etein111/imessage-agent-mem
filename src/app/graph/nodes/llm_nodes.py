@@ -35,29 +35,29 @@ async def generate_reply_simple_node(state: PipelineState, config=None) -> Dict[
     """
     model = await get_model()
 
-    # 检查是否有个性化提示词
+    # System Prompt (人设)
     current_persona = state.get("current_persona")
     if current_persona:
         system_prompt = current_persona
     else:
         system_prompt = get_system_prompt()
 
-    # 准备消息
-    messages = list(state.get("messages", []))
-
-
+    # 注入前情提要 (摘要)
     prev_summary = state.get("prev_summary", "")
     if prev_summary:
         system_prompt += f"\n\n【前情提要】\n{prev_summary}"
 
-    # 添加系统提示词
-    if not messages or not isinstance(messages[0], SystemMessage):
-        goal_instruction = state.get("goal_instruction", "")
-        full_prompt = f"{system_prompt}\n\n{goal_instruction}" if goal_instruction else system_prompt
-        messages.insert(0, SystemMessage(content=full_prompt))
+    full_messages = list(state.get("short_term_memory", []))
 
-    # 调用模型
-    response = await model.ainvoke(messages, config=config)
+    incoming_messages = state.get("messages", [])
+    if incoming_messages:
+        last_msg = incoming_messages[-1]
+        if isinstance(last_msg, HumanMessage):
+            full_messages.append(last_msg)
+
+    full_messages.insert(0, SystemMessage(content=system_prompt))
+
+    response = await model.ainvoke(full_messages, config=config)
 
     return {"messages": [response]}
 
@@ -102,7 +102,13 @@ async def estimate_state_node(state: PipelineState, config=None) -> Dict[str, An
             current_user_msg = msg.content
             break
 
-    memory_context = "\n".join(short_term_memory) if short_term_memory else "无历史记录"
+    if short_term_memory:
+        # 格式化为 "human: 内容 \n ai: 内容"
+        memory_context = "\n".join(
+            [f"{msg.type}: {msg.content}" for msg in short_term_memory]
+        )
+    else:
+        memory_context = "无历史记录"
 
     prompt = f"""你是一个情绪和对话类型分类专家。请分析用户的当前状态。
 
@@ -151,7 +157,13 @@ async def plan_goal_node(state: PipelineState, config=None) -> Dict[str, Any]:
             current_user_msg = msg.content
             break
 
-    memory_context = "\n".join(short_term_memory[-3:]) if short_term_memory else "无历史"
+    recent_msgs = short_term_memory[-3:] if short_term_memory else []
+    if recent_msgs:
+        memory_context = "\n".join(
+            [f"{msg.type}: {msg.content}" for msg in recent_msgs]
+        )
+    else:
+        memory_context = "无历史"
 
     prompt = f"""你是一个对话策略规划专家。
 【用户情绪】{emotion}

@@ -75,7 +75,7 @@ async def mock_pipeline_step(user_input: str):
 
     print(Fore.WHITE + f"Redis 消息数: {current_len} (阈值40触发归档)")
     if summary:
-        print(Fore.YELLOW + f"📜 当前摘要: {summary[:30]}...")
+        print(Fore.YELLOW + f"当前摘要: {summary[:30]}...")
     print(Fore.WHITE + "-" * 30)
 
 

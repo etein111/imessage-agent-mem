@@ -34,13 +34,35 @@ def check_system_command(state: PipelineState) -> Literal["reset", "help", "list
     messages = state.get("messages", [])
     if not messages:
         return "normal"
-    
+
+    last_message = None
+    for msg in reversed(messages):
+        if isinstance(msg, HumanMessage):
+            last_message = msg
+            break
+
+    if not last_message:
+        return "normal"
     last_message = messages[-1]
     if not isinstance(last_message, HumanMessage):
         return "normal"
-    
+
+    content = last_message.content
+    if isinstance(content, list):
+        # 如果 content 是列表，拼接成字符串
+        text_parts = []
+        for part in content:
+            if isinstance(part, dict) and "text" in part:
+                text_parts.append(part["text"])
+            elif isinstance(part, str):
+                text_parts.append(part)
+        content = "".join(text_parts)
+    elif not isinstance(content, str):
+        # 如果既不是 list 也不是 str，强转
+        content = str(content)
+
     # 提取内容并标准化
-    content = last_message.content.strip()
+    content = content.strip()
     content_lower = content.lower()
     
     # 检测清除指令

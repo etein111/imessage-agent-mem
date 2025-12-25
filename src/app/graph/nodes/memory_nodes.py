@@ -20,10 +20,10 @@ async def load_context_node(state: PipelineState) -> Dict[str, Any]:
     user_id = state.get("user_id", "default_user")
 
     # 1. 加载摘要 (上十轮的总结)
-    prev_summary = redis_store.get_summary(user_id)
+    prev_summary = await redis_store.get_summary(user_id)
 
     # 2. 加载对话 (拉取 Redis 里最近的 20 条 / 10轮)
-    raw_history = redis_store.get_context(user_id, limit=20)
+    raw_history = await redis_store.get_context(user_id, limit=20)
 
     short_term_memory = [
         HumanMessage(content=m['content']) if m['role'] == 'user' else AIMessage(content=m['content'])
@@ -48,8 +48,8 @@ async def save_memory_node(state: PipelineState, config=None) -> Dict[str, Any]:
     if not (last_human and last_ai): return {}
 
     # 1. 存入 Redis
-    redis_store.add_message(user_id, "user", last_human)
-    redis_store.add_message(user_id, "assistant", last_ai)
+    await redis_store.add_message(user_id, "user", last_human)
+    await redis_store.add_message(user_id, "assistant", last_ai)
 
     extra_messages = []
 
@@ -60,7 +60,7 @@ async def save_memory_node(state: PipelineState, config=None) -> Dict[str, Any]:
     if is_intent:
         print(f" 检测到用户生成碎片的意图...")
         # 拉取近 3 轮 (6条)
-        recent_3_rounds = redis_store.get_context(user_id, limit=6)
+        recent_3_rounds = await redis_store.get_context(user_id, limit=6)
         # 生成碎片
         fragment = await generate_fragment_node(recent_3_rounds)
 
@@ -70,17 +70,17 @@ async def save_memory_node(state: PipelineState, config=None) -> Dict[str, Any]:
 
     # ==================== B. 溢出检查与摘要生成 ====================
     # 检查是否达到 40 条 (20轮)
-    overflow_msgs = redis_store.check_and_extract_overflow(user_id)
+    overflow_msgs = await redis_store.check_and_extract_overflow(user_id)
 
     if overflow_msgs:
         print(f"达到 20 轮对话，归档旧的 10 轮...")
         # 获取旧摘要
-        old_summary = redis_store.get_summary(user_id)
+        old_summary = await redis_store.get_summary(user_id)
         # 生成新摘要 (旧摘要 + 溢出的10轮 -> 新摘要)
         new_summary = await consolidate_memory_node(overflow_msgs, old_summary)
 
         if new_summary:
-            redis_store.update_summary(user_id, new_summary)
+            await redis_store.update_summary(user_id, new_summary)
             print(f"摘要已更新: {new_summary[:20]}...")
 
     # 返回更新后的状态

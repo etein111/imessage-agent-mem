@@ -28,25 +28,32 @@ class PipelineState(TypedDict):
     """完整流水线状态 - 包含所有功能"""
     # 核心消息流
     messages: Annotated[Sequence[BaseMessage], add_messages]
-    
+
     # 上下文信息
     user_id: str
     conversation_id: str
-    
-    # 记忆相关
-    short_term_memory: List[str]
-    
+
+    # === 记忆相关 ===
+    # 短期记忆：Redis里的近20条对话 (存的是 Message 对象，不是 str)
+    short_term_memory: List[BaseMessage]
+
+    # 前情提要：Redis里的摘要
+    prev_summary: Optional[str]
+
+    # 当前人设：从文件加载的 Prompt
+    current_persona: Optional[str]
+
     # 安全标记 (V3)
     safety_status: Optional[str]  # "safe" | "unsafe" | "rewritten"
-    
+
     # 状态估计 (V4)
     current_emotion: Optional[str]  # happy, sad, stressed, bored, neutral
     dialogue_type: Optional[str]    # small_talk, support, task, onboarding, flirt, conflict
-    
+
     # 目标规划 (V5)
     current_goal: Optional[str]     # cheer_up, collect_profile, deep_talk, light_task, casual_chat
     goal_instruction: Optional[str]  # 目标具体指令
-    
+
     # 工具集成 (V6)
     tool_results: Optional[Dict[str, Any]]  # 工具执行结果
     tool_to_call: Optional[str]             # 计划调用的工具名
@@ -63,18 +70,25 @@ PipelineV6State = PipelineState
 
 # ==================== 状态工厂函数 ====================
 def create_initial_state(
-    user_id: str,
-    conversation_id: str,
-    initial_message: Optional[str] = None
+        user_id: str,
+        conversation_id: str,
+        initial_message: Optional[str] = None
 ) -> PipelineState:
     """创建初始状态"""
     from langchain_core.messages import HumanMessage
-    
+
     state: PipelineState = {
         "messages": [HumanMessage(content=initial_message)] if initial_message else [],
         "user_id": user_id,
         "conversation_id": conversation_id,
+
+        # === 修改初始化部分 ===
         "short_term_memory": [],
+        "prev_summary": "",  # 默认为空字符串
+        "user_profile": {},  # 默认为空字典
+        "current_persona": None,  # 默认为 None
+        # ====================
+
         "safety_status": None,
         "current_emotion": None,
         "dialogue_type": None,

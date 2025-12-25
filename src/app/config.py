@@ -7,6 +7,14 @@ from pathlib import Path
 from typing import Optional
 from langchain_openai import ChatOpenAI
 from dotenv import load_dotenv
+import logging
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+
+logger = logging.getLogger(__name__) # 获取当前模块的 logger
 
 load_dotenv()
 
@@ -54,6 +62,8 @@ def get_llm_model():
     if not api_key:
         raise ValueError("未找到 API_KEY，请检查 .env 文件")
 
+    logger.info(f"正在初始化 LLM 模型: [{model_name}] (Base URL: {base_url})")
+
     return ChatOpenAI(
         model=model_name,
         api_key=api_key,
@@ -61,6 +71,7 @@ def get_llm_model():
         temperature=0.7,
         streaming=False # 根据需要开启
     )
+
 
 # ==================== 人设配置 ====================
 def get_system_prompt() -> str:
@@ -86,3 +97,12 @@ MEMORY_MAX_ITEMS = int(get_env("MEMORY_MAX_ITEMS", "10"))
 LANGGRAPH_API_PORT = int(get_env("LANGGRAPH_API_PORT", "2024"))
 LANGGRAPH_API_HOST = get_env("LANGGRAPH_API_HOST", "0.0.0.0")
 
+def get_redis_config():
+    """获取 Redis 连接配置"""
+    return {
+        "host": os.getenv("REDIS_HOST", "localhost"),
+        "port": int(os.getenv("REDIS_PORT", 6379)),
+        "db": int(os.getenv("REDIS_DB", 0)),
+        "password": os.getenv("REDIS_PASSWORD", None),
+        "decode_responses": True
+    }
