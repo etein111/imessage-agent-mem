@@ -2,18 +2,75 @@
 记忆管理节点
 负责加载和保存对话记忆，以及触发记忆整理仪式
 """
-from typing import Dict, Any
+from typing import Dict, Any,List
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.graph.state import PipelineState
-from app.memory.redis_store import redis_store
+from src.app.graph.state import PipelineState
+from src.app.memory.redis_store import redis_store
 
-from app.graph.nodes.llm_nodes import (
+from src.app.graph.nodes.llm_nodes import (
     check_fragment_intent_node,
     generate_fragment_node,
     consolidate_memory_node
 )
+from src.app.memory.mem0_store import AsyncMem0Adapter,build_mem0_adapter
+_mem0_singleton = None
 
+async def get_mem0() -> AsyncMem0Adapter:
+    global _mem0_singleton
+    if _mem0_singleton is None:
+        _mem0_singleton = await build_mem0_adapter()
+    return _mem0_singleton
+
+import asyncio
+import logging
+
+logger = logging.getLogger(__name__)
+
+async def _persist_overflow_to_mem0(user_id: str, overflow_msgs: list):
+    try:
+        mem0 = await get_mem0()
+
+        # 给一个上限，避免后台任务无限挂着
+        await asyncio.wait_for(
+            mem0.add_messages(
+                overflow_msgs,
+                user_id=user_id,
+                infer=True,
+            ),
+            timeout=30,  # 自己调，比如 30-120s
+        )
+        logger.info("mem0 persist success user_id=%s items=%d", user_id, len(overflow_msgs))
+
+    except asyncio.TimeoutError:
+        logger.warning("mem0 persist timeout user_id=%s", user_id)
+    except Exception as e:
+        logger.exception("mem0 persist failed user_id=%s err=%s", user_id, e)
+
+def _format_mem0_hits_to_list(hits) -> List[str]:
+    """
+    将 mem0 search 结果格式化为字符串列表
+    每一条 = 一条长期记忆
+    """
+    if not hits:
+        return []
+
+    # mem0 可能返回 {"results":[...]} 或直接是 list
+    if isinstance(hits, dict):
+        hits = hits.get("results", [])
+
+    if not hits:
+        return []
+
+    memories: List[str] = []
+
+    for h in hits:
+        text = (h.get("memory") or h.get("text") or "").strip()
+        if not text:
+            continue
+        memories.append(text)
+
+    return memories
 
 # ==================== 加载上下文节点 ====================
 async def load_context_node(state: PipelineState) -> Dict[str, Any]:
@@ -24,16 +81,22 @@ async def load_context_node(state: PipelineState) -> Dict[str, Any]:
 
     # 2. 加载对话 (拉取 Redis 里最近的 20 条 / 10轮)
     raw_history = redis_store.get_context(user_id, limit=20)
-
     short_term_memory = [
         HumanMessage(content=m['content']) if m['role'] == 'user' else AIMessage(content=m['content'])
         for m in raw_history
     ]
-
+    # 3. mem0 长期记忆检索：用“最新用户输入”作为 query
+    messages = state.get("messages", [])
+    last_user_text = next((m.content for m in reversed(messages) if isinstance(m, HumanMessage)), "") or ""
+    query = last_user_text.strip() or "conversation context"
+    mem0 = await get_mem0()
+    hits = await mem0.search(query, user_id=user_id, limit=8)
+    long_term_memory = _format_mem0_hits_to_list(hits)
     return {
-        "short_term_memory": short_term_memory,
-        "prev_summary": prev_summary
-    }
+            "short_term_memory": short_term_memory,
+            "prev_summary": prev_summary,
+            "long_term_memory": long_term_memory,
+        }
 
 
 # ==================== 保存记忆节点 ====================
@@ -78,10 +141,12 @@ async def save_memory_node(state: PipelineState, config=None) -> Dict[str, Any]:
         old_summary = redis_store.get_summary(user_id)
         # 生成新摘要 (旧摘要 + 溢出的10轮 -> 新摘要)
         new_summary = await consolidate_memory_node(overflow_msgs, old_summary)
-
         if new_summary:
             redis_store.update_summary(user_id, new_summary)
             print(f"摘要已更新: {new_summary[:20]}...")
+
+    # 不阻塞主流程：后台写 mem0
+    asyncio.create_task(_persist_overflow_to_mem0(user_id, overflow_msgs))
 
     # 返回更新后的状态
     return {"messages": extra_messages} if extra_messages else {}

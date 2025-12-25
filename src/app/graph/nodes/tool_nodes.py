@@ -4,8 +4,8 @@
 """
 from typing import Dict, Any
 
-from app.graph.state import PipelineState
-from app.tools.external_tools import run_tool
+from src.app.graph.state import PipelineState
+from src.app.tools.external_tools import run_tool
 
 
 # ==================== 工具调用节点 ====================

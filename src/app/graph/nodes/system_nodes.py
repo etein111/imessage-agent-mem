@@ -85,7 +85,7 @@ def reset_conversation_node(state: PipelineState) -> dict:
     """
     # 清空长期记忆（新增）
     user_id = state.get("user_id", "default_user")
-    from app.memory.session_store import SimpleMemoryStore
+    from src.app.memory.session_store import SimpleMemoryStore
     
     try:
         SimpleMemoryStore.clear_memory(user_id)
@@ -150,7 +150,7 @@ def list_personas_node(state: PipelineState) -> dict:
     """
     列出所有可用的提示词
     """
-    from app.prompts.prompt_service import prompt_service
+    from src.app.prompts.prompt_service import prompt_service
     
     try:
         personas = prompt_service.list_personas()
@@ -193,7 +193,7 @@ def switch_persona_node(state: PipelineState) -> dict:
     
     从用户消息中提取提示词名称，设置为用户的当前提示词
     """
-    from app.prompts.prompt_service import prompt_service
+    from src.app.prompts.prompt_service import prompt_service
     
     # 获取用户ID
     user_id = state.get("user_id", "default_user")
@@ -252,7 +252,7 @@ def switch_persona_node(state: PipelineState) -> dict:
             )
             
             # 清空对话历史和记忆（切换人设后重新开始）
-            from app.memory.session_store import SimpleMemoryStore
+            from src.app.memory.session_store import SimpleMemoryStore
             try:
                 SimpleMemoryStore.clear_memory(user_id)
                 print(f"✅ 切换提示词后已清空用户 {user_id} 的记忆")

@@ -3,15 +3,16 @@ LLM 调用节点
 所有与大模型交互的节点函数
 """
 import asyncio
-from typing import Dict, Any, Optional, List
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+from typing import Dict, Any
+from langchain_core.messages import SystemMessage, HumanMessage
+
 try:
     from pydantic import BaseModel, Field
 except ImportError:
     from langchain_core.pydantic_v1 import BaseModel, Field
 
-from app.graph.state import PipelineState
-from app.config import get_llm_model, get_system_prompt
+from src.app.graph.state import PipelineState
+from src.app.config import get_llm_model, get_system_prompt
 
 
 # ==================== 模型获取 ====================

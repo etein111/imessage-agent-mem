@@ -24,7 +24,7 @@ pip install -r requirements.txt
 
 ```bash
 # 复制环境变量模板
-cp env.example .env
+cp .env .env
 
 # 编辑 .env 文件，填入你的配置
 nano .env

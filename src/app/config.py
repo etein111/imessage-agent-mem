@@ -68,7 +68,7 @@ def get_system_prompt() -> str:
     获取当前人设的系统提示词
     通过环境变量 PERSONA_NAME 指定
     """
-    from app.memory.persona_loader import load_persona_from_env
+    from src.app.memory.persona_loader import load_persona_from_env
     
     return load_persona_from_env(default="youci")
 
@@ -85,4 +85,37 @@ MEMORY_MAX_ITEMS = int(get_env("MEMORY_MAX_ITEMS", "10"))
 # ==================== API 配置 ====================
 LANGGRAPH_API_PORT = int(get_env("LANGGRAPH_API_PORT", "2024"))
 LANGGRAPH_API_HOST = get_env("LANGGRAPH_API_HOST", "0.0.0.0")
+
+
+MEM0_CONFIG = {
+    "vector_store": {
+        "provider": os.getenv("VECTOR_STORE_PROVIDER", "qdrant"),
+        "config": {
+            "host": os.getenv("QDRANT_HOST", "localhost"),
+            "port": int(os.getenv("QDRANT_PORT", "6333")),
+        },
+    },
+
+    "embedder": {
+        "provider": "openai",
+        "config": {
+            "api_key": os.getenv("OPENAI_API_KEY"),
+            "openai_base_url": os.getenv("OPENAI_BASE_URL"),
+            "model": os.getenv("OPENAI_EMBED_MODEL", "text-embedding-3-small"),
+        },
+    },
+
+    "llm": {
+        "provider": "openai",
+        "config": {
+            "api_key": os.getenv("OPENAI_API_KEY"),
+            "openai_base_url": os.getenv("OPENAI_BASE_URL"),
+            "model": os.getenv("OPENAI_LLM_MODEL", "gpt-4o-mini"),
+        },
+    },
+
+    # 可选：是否启用 graph_store
+    # "graph_store": {
+    # },
+}
 

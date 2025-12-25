@@ -9,7 +9,7 @@ import uuid
 import warnings
 from copy import deepcopy
 from datetime import datetime
-from typing import Any, Dict, Optional,List
+from typing import Any, Dict, Optional,List,Tuple
 
 import pytz
 from pydantic import ValidationError
@@ -1644,30 +1644,39 @@ class AsyncMemory(MemoryBase):
 
         return {"results": vector_store_result}
 
+    import asyncio
+    import json
+    from copy import deepcopy
+    from datetime import datetime
+    from typing import Any, Dict, List, Tuple
+    import pytz
+
+    # ... 省略：logger, remove_code_blocks, extract_json, parse_messages,
+    # get_fact_retrieval_messages, get_update_memory_messages, process_telemetry_filters, capture_event 等
+
     async def _add_to_vector_store(
-        self,
-        messages: list,
-        metadata: dict,
-        effective_filters: dict,
-        infer: bool,
+            self,
+            messages: list,
+            metadata: dict,
+            effective_filters: dict,
+            infer: bool,
     ):
         if not infer:
+            # 你已有的 not infer 分支，保持不变
             returned_memories = []
             for message_dict in messages:
                 if (
-                    not isinstance(message_dict, dict)
-                    or message_dict.get("role") is None
-                    or message_dict.get("content") is None
+                        not isinstance(message_dict, dict)
+                        or message_dict.get("role") is None
+                        or message_dict.get("content") is None
                 ):
                     logger.warning(f"Skipping invalid message format (async): {message_dict}")
                     continue
-
                 if message_dict["role"] == "system":
                     continue
 
                 per_msg_meta = deepcopy(metadata)
                 per_msg_meta["role"] = message_dict["role"]
-
                 actor_name = message_dict.get("name")
                 if actor_name:
                     per_msg_meta["actor_id"] = actor_name
@@ -1687,13 +1696,15 @@ class AsyncMemory(MemoryBase):
                 )
             return returned_memories
 
+        # --------------------------
+        # infer=True：对齐你的 sync 逻辑
+        # --------------------------
         parsed_messages = parse_messages(messages)
+
         if self.config.custom_fact_extraction_prompt:
             system_prompt = self.config.custom_fact_extraction_prompt
             user_prompt = f"Input:\n{parsed_messages}"
         else:
-            # Determine if this should use agent memory extraction based on agent_id presence
-            # and role types in messages
             is_agent_memory = self._should_use_agent_memory_extraction(messages, metadata)
             system_prompt, user_prompt = get_fact_retrieval_messages(parsed_messages, is_agent_memory)
 
@@ -1702,29 +1713,69 @@ class AsyncMemory(MemoryBase):
             messages=[{"role": "system", "content": system_prompt}, {"role": "user", "content": user_prompt}],
             response_format={"type": "json_object"},
         )
+
+        # ------------------------------------------------------------
+        # Parse facts (NEW: list[dict]) or (OLD: list[str])
+        # 输出：
+        #   new_retrieved_facts_texts: List[str]
+        #   fact_meta_by_text: Dict[str, Dict[str, Any]]
+        # ------------------------------------------------------------
+        new_retrieved_facts_texts: List[str] = []
+        fact_meta_by_text: Dict[str, Dict[str, Any]] = {}
+
         try:
             response = remove_code_blocks(response)
             if not response.strip():
-                new_retrieved_facts = []
+                parsed_obj = {"facts": []}
             else:
                 try:
-                    # First try direct JSON parsing
-                    new_retrieved_facts = json.loads(response)["facts"]
+                    parsed_obj = json.loads(response)
                 except json.JSONDecodeError:
-                    # Try extracting JSON from response using built-in function
                     extracted_json = extract_json(response)
-                    new_retrieved_facts = json.loads(extracted_json)["facts"]
-        except Exception as e:
-            logger.error(f"Error in new_retrieved_facts: {e}")
-            new_retrieved_facts = []
+                    parsed_obj = json.loads(extracted_json)
 
-        if not new_retrieved_facts:
+            facts = parsed_obj.get("facts", [])
+
+            # NEW: structured facts list[dict]
+            if isinstance(facts, list) and facts and isinstance(facts[0], dict):
+                for f in facts:
+                    if not isinstance(f, dict):
+                        continue
+                    text = (f.get("text") or "").strip()
+                    if not text:
+                        continue
+
+                    new_retrieved_facts_texts.append(text)
+                    fact_meta_by_text[text] = {
+                        "fact_schema_version": "v2_structured",
+                        "mem_category": f.get("mem_category"),
+                        "mem_type": f.get("mem_type"),
+                        "entities": f.get("entities", []) if isinstance(f.get("entities"), list) else [],
+                        "time": f.get("time"),
+                        "sentiment": f.get("sentiment"),
+                        "emotion": f.get("emotion"),
+                        "confidence": f.get("confidence"),
+                        "sensitivity": f.get("sensitivity"),
+                    }
+
+            # OLD: list[str]
+            elif isinstance(facts, list):
+                new_retrieved_facts_texts = [str(x).strip() for x in facts if str(x).strip()]
+                fact_meta_by_text = {}
+
+            else:
+                new_retrieved_facts_texts = []
+                fact_meta_by_text = {}
+
+        except Exception as e:
+            logger.error(f"Error in parsing facts (async): {e}")
+            new_retrieved_facts_texts = []
+            fact_meta_by_text = {}
+
+        if not new_retrieved_facts_texts:
             logger.debug("No new facts retrieved from input. Skipping memory update LLM call.")
 
-        retrieved_old_memory = []
-        new_message_embeddings = {}
-        # Search for existing memories using the provided session identifiers
-        # Use all available session identifiers for accurate memory retrieval
+        # Search filters（保持 AsyncMemory 原意：用 session ids）
         search_filters = {}
         if effective_filters.get("user_id"):
             search_filters["user_id"] = effective_filters["user_id"]
@@ -1733,36 +1784,53 @@ class AsyncMemory(MemoryBase):
         if effective_filters.get("run_id"):
             search_filters["run_id"] = effective_filters["run_id"]
 
-        async def process_fact_for_search(new_mem_content):
-            embeddings = await asyncio.to_thread(self.embedding_model.embed, new_mem_content, "add")
-            new_message_embeddings[new_mem_content] = embeddings
+        # ------------------------------------------------------------
+        # 并发：embed + search，但不要并发写 dict
+        # 返回 (fact_text, embeddings, existing_mems)
+        # ------------------------------------------------------------
+        async def process_fact_for_search(fact_text: str) -> Tuple[str, Any, List[Dict[str, str]]]:
+            embeddings = await asyncio.to_thread(self.embedding_model.embed, fact_text, "add")
             existing_mems = await asyncio.to_thread(
                 self.vector_store.search,
-                query=new_mem_content,
+                query=fact_text,
                 vectors=embeddings,
                 limit=5,
                 filters=search_filters,
             )
-            return [{"id": mem.id, "text": mem.payload.get("data", "")} for mem in existing_mems]
+            mem_list = [{"id": mem.id, "text": mem.payload.get("data", "")} for mem in existing_mems]
+            return fact_text, embeddings, mem_list
 
-        search_tasks = [process_fact_for_search(fact) for fact in new_retrieved_facts]
-        search_results_list = await asyncio.gather(*search_tasks)
-        for result_group in search_results_list:
-            retrieved_old_memory.extend(result_group)
+        retrieved_old_memory: List[Dict[str, str]] = []
+        new_message_embeddings: Dict[str, Any] = {}
 
-        unique_data = {}
-        for item in retrieved_old_memory:
-            unique_data[item["id"]] = item
+        search_tasks = [process_fact_for_search(t) for t in new_retrieved_facts_texts]
+        search_results = await asyncio.gather(*search_tasks, return_exceptions=True)
+
+        for r in search_results:
+            if isinstance(r, Exception):
+                logger.error(f"Error in process_fact_for_search (async): {r}")
+                continue
+            fact_text, embeddings, mem_list = r
+            new_message_embeddings[fact_text] = embeddings
+            retrieved_old_memory.extend(mem_list)
+
+        # 去重 old memories
+        unique_data = {item["id"]: item for item in retrieved_old_memory if item.get("id")}
         retrieved_old_memory = list(unique_data.values())
-        logger.info(f"Total existing memories: {len(retrieved_old_memory)}")
+        logger.info(f"Total existing memories (async): {len(retrieved_old_memory)}")
+
+        # mapping UUIDs with integers for handling UUID hallucinations
         temp_uuid_mapping = {}
         for idx, item in enumerate(retrieved_old_memory):
             temp_uuid_mapping[str(idx)] = item["id"]
             retrieved_old_memory[idx]["id"] = str(idx)
 
-        if new_retrieved_facts:
+        # ------------------------------------------------------------
+        # LLM：决定 ADD/UPDATE/DELETE/NONE
+        # ------------------------------------------------------------
+        if new_retrieved_facts_texts:
             function_calling_prompt = get_update_memory_messages(
-                retrieved_old_memory, new_retrieved_facts, self.config.custom_update_memory_prompt
+                retrieved_old_memory, new_retrieved_facts_texts, self.config.custom_update_memory_prompt
             )
             try:
                 response = await asyncio.to_thread(
@@ -1771,103 +1839,151 @@ class AsyncMemory(MemoryBase):
                     response_format={"type": "json_object"},
                 )
             except Exception as e:
-                logger.error(f"Error in new memory actions response: {e}")
+                logger.error(f"Error in new memory actions response (async): {e}")
                 response = ""
+
             try:
                 if not response or not response.strip():
-                    logger.warning("Empty response from LLM, no memories to extract")
+                    logger.warning("Empty response from LLM, no memories to extract (async)")
                     new_memories_with_actions = {}
                 else:
                     response = remove_code_blocks(response)
                     new_memories_with_actions = json.loads(response)
             except Exception as e:
-                logger.error(f"Invalid JSON response: {e}")
+                logger.error(f"Invalid JSON response (async): {e}")
                 new_memories_with_actions = {}
         else:
             new_memories_with_actions = {}
 
-        returned_memories = []
-        try:
-            memory_tasks = []
-            for resp in new_memories_with_actions.get("memory", []):
-                logger.info(resp)
-                try:
-                    action_text = resp.get("text")
-                    if not action_text:
+        # ------------------------------------------------------------
+        # Fallback: batch classify action_texts that don't match extracted fact.text
+        # ------------------------------------------------------------
+        needs_fallback: List[str] = []
+        for resp in new_memories_with_actions.get("memory", []):
+            try:
+                event_type = resp.get("event")
+                if event_type not in ("ADD", "UPDATE"):
+                    continue
+                action_text = (resp.get("text") or "").strip()
+                if not action_text:
+                    continue
+                if action_text not in fact_meta_by_text:
+                    needs_fallback.append(action_text)
+            except Exception:
+                continue
+
+        fallback_meta_by_text: Dict[str, Dict[str, Any]] = {}
+        if needs_fallback:
+            # 如果你的 _fallback_classify_memories 是 sync 的：用 to_thread 包一下
+            fallback_meta_by_text = await asyncio.to_thread(self._fallback_classify_memories, needs_fallback)
+
+        # ------------------------------------------------------------
+        # 并发执行 memory actions（但每条 action 都要 merge extra_meta）
+        # ------------------------------------------------------------
+        returned_memories: List[Dict[str, Any]] = []
+        memory_tasks: List[Tuple[asyncio.Task, Dict[str, Any], str, Any]] = []
+
+        async def update_session_ids(mem_id: str, meta: dict):
+            existing_memory = await asyncio.to_thread(self.vector_store.get, vector_id=mem_id)
+            updated_metadata = deepcopy(existing_memory.payload)
+            if meta.get("agent_id"):
+                updated_metadata["agent_id"] = meta["agent_id"]
+            if meta.get("run_id"):
+                updated_metadata["run_id"] = meta["run_id"]
+            updated_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+
+            await asyncio.to_thread(
+                self.vector_store.update,
+                vector_id=mem_id,
+                vector=None,
+                payload=updated_metadata,
+            )
+            logger.info(f"Updated session IDs for memory {mem_id} (async)")
+
+        for resp in new_memories_with_actions.get("memory", []):
+            logger.info(resp)
+            try:
+                action_text = (resp.get("text") or "").strip()
+                if not action_text:
+                    logger.info("Skipping memory entry because of empty `text` field. (async)")
+                    continue
+
+                event_type = resp.get("event")
+
+                if event_type == "ADD":
+                    per_meta = deepcopy(metadata)
+                    extra_meta = fact_meta_by_text.get(action_text) or fallback_meta_by_text.get(action_text)
+                    if extra_meta:
+                        per_meta.update(extra_meta)
+
+                    task = asyncio.create_task(
+                        self._create_memory(
+                            data=action_text,
+                            existing_embeddings=new_message_embeddings,
+                            metadata=per_meta,
+                        )
+                    )
+                    memory_tasks.append((task, resp, "ADD", None))
+
+                elif event_type == "UPDATE":
+                    per_meta = deepcopy(metadata)
+                    extra_meta = fact_meta_by_text.get(action_text) or fallback_meta_by_text.get(action_text)
+                    if extra_meta:
+                        per_meta.update(extra_meta)
+
+                    real_id = temp_uuid_mapping.get(resp.get("id"))
+                    if not real_id:
+                        logger.warning(f"UPDATE missing id mapping (async): {resp.get('id')}")
                         continue
-                    event_type = resp.get("event")
 
-                    if event_type == "ADD":
-                        task = asyncio.create_task(
-                            self._create_memory(
-                                data=action_text,
-                                existing_embeddings=new_message_embeddings,
-                                metadata=deepcopy(metadata),
-                            )
+                    task = asyncio.create_task(
+                        self._update_memory(
+                            memory_id=real_id,
+                            data=action_text,
+                            existing_embeddings=new_message_embeddings,
+                            metadata=per_meta,
                         )
-                        memory_tasks.append((task, resp, "ADD", None))
-                    elif event_type == "UPDATE":
-                        task = asyncio.create_task(
-                            self._update_memory(
-                                memory_id=temp_uuid_mapping[resp["id"]],
-                                data=action_text,
-                                existing_embeddings=new_message_embeddings,
-                                metadata=deepcopy(metadata),
-                            )
-                        )
-                        memory_tasks.append((task, resp, "UPDATE", temp_uuid_mapping[resp["id"]]))
-                    elif event_type == "DELETE":
-                        task = asyncio.create_task(self._delete_memory(memory_id=temp_uuid_mapping[resp.get("id")]))
-                        memory_tasks.append((task, resp, "DELETE", temp_uuid_mapping[resp.get("id")]))
-                    elif event_type == "NONE":
-                        # Even if content doesn't need updating, update session IDs if provided
-                        memory_id = temp_uuid_mapping.get(resp.get("id"))
-                        if memory_id and (metadata.get("agent_id") or metadata.get("run_id")):
-                            # Create async task to update only the session identifiers
-                            async def update_session_ids(mem_id, meta):
-                                existing_memory = await asyncio.to_thread(self.vector_store.get, vector_id=mem_id)
-                                updated_metadata = deepcopy(existing_memory.payload)
-                                if meta.get("agent_id"):
-                                    updated_metadata["agent_id"] = meta["agent_id"]
-                                if meta.get("run_id"):
-                                    updated_metadata["run_id"] = meta["run_id"]
-                                updated_metadata["updated_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+                    )
+                    memory_tasks.append((task, resp, "UPDATE", real_id))
 
-                                await asyncio.to_thread(
-                                    self.vector_store.update,
-                                    vector_id=mem_id,
-                                    vector=None,  # Keep same embeddings
-                                    payload=updated_metadata,
-                                )
-                                logger.info(f"Updated session IDs for memory {mem_id} (async)")
+                elif event_type == "DELETE":
+                    real_id = temp_uuid_mapping.get(resp.get("id"))
+                    if not real_id:
+                        logger.warning(f"DELETE missing id mapping (async): {resp.get('id')}")
+                        continue
+                    task = asyncio.create_task(self._delete_memory(memory_id=real_id))
+                    memory_tasks.append((task, resp, "DELETE", real_id))
 
-                            task = asyncio.create_task(update_session_ids(memory_id, metadata))
-                            memory_tasks.append((task, resp, "NONE", memory_id))
-                        else:
-                            logger.info("NOOP for Memory (async).")
-                except Exception as e:
-                    logger.error(f"Error processing memory action (async): {resp}, Error: {e}")
+                elif event_type == "NONE":
+                    real_id = temp_uuid_mapping.get(resp.get("id"))
+                    if real_id and (metadata.get("agent_id") or metadata.get("run_id")):
+                        task = asyncio.create_task(update_session_ids(real_id, metadata))
+                        memory_tasks.append((task, resp, "NONE", real_id))
+                    else:
+                        logger.info("NOOP for Memory (async).")
 
-            for task, resp, event_type, mem_id in memory_tasks:
-                try:
-                    result_id = await task
-                    if event_type == "ADD":
-                        returned_memories.append({"id": result_id, "memory": resp.get("text"), "event": event_type})
-                    elif event_type == "UPDATE":
-                        returned_memories.append(
-                            {
-                                "id": mem_id,
-                                "memory": resp.get("text"),
-                                "event": event_type,
-                                "previous_memory": resp.get("old_memory"),
-                            }
-                        )
-                    elif event_type == "DELETE":
-                        returned_memories.append({"id": mem_id, "memory": resp.get("text"), "event": event_type})
-                except Exception as e:
-                    logger.error(f"Error awaiting memory task (async): {e}")
-        except Exception as e:
-            logger.error(f"Error in memory processing loop (async): {e}")
+            except Exception as e:
+                logger.error(f"Error processing memory action (async): {resp}, Error: {e}")
+
+        for task, resp, event_type, mem_id in memory_tasks:
+            try:
+                result = await task
+                if event_type == "ADD":
+                    returned_memories.append({"id": result, "memory": resp.get("text"), "event": event_type})
+                elif event_type == "UPDATE":
+                    returned_memories.append(
+                        {
+                            "id": mem_id,
+                            "memory": resp.get("text"),
+                            "event": event_type,
+                            "previous_memory": resp.get("old_memory"),
+                        }
+                    )
+                elif event_type == "DELETE":
+                    returned_memories.append({"id": mem_id, "memory": resp.get("text"), "event": event_type})
+                # NONE 通常不返回 entry（你 sync 版也只是更新 session id）
+            except Exception as e:
+                logger.error(f"Error awaiting memory task (async): {e}")
 
         keys, encoded_ids = process_telemetry_filters(effective_filters)
         capture_event(
@@ -1888,6 +2004,67 @@ class AsyncMemory(MemoryBase):
 
         return added_entities
 
+    def _fallback_classify_memories(self, texts: List[str]) -> Dict[str, Dict[str, Any]]:
+        """
+        Batch classify action_texts that failed exact match with extracted facts.
+        Returns: {text -> extra_meta_dict}
+        """
+        if not texts:
+            return {}
+
+        # 去重但保持文本一致性
+        uniq = []
+        seen = set()
+        for t in texts:
+            t = (t or "").strip()
+            if t and t not in seen:
+                seen.add(t)
+                uniq.append(t)
+
+        payload = {"items": uniq}
+
+        try:
+            resp = self.llm.generate_response(
+                messages=[
+                    {"role": "system", "content": FALLBACK_MEMORY_CLASSIFIER_PROMPT},
+                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
+                ],
+                response_format={"type": "json_object"},
+            )
+            resp = remove_code_blocks(resp)
+
+            try:
+                obj = json.loads(resp)
+            except json.JSONDecodeError:
+                obj = json.loads(extract_json(resp))
+
+            items = obj.get("items", [])
+            out: Dict[str, Dict[str, Any]] = {}
+
+            for it in items:
+                if not isinstance(it, dict):
+                    continue
+                text = (it.get("text") or "").strip()
+                if not text:
+                    continue
+
+                out[text] = {
+                    "fact_schema_version": "v2_fallback_classifier",
+                    "mem_category": it.get("mem_category"),
+                    "mem_type": it.get("mem_type"),
+                    "entities": it.get("entities", []) if isinstance(it.get("entities"), list) else [],
+                    "time": it.get("time"),
+                    "sentiment": it.get("sentiment"),
+                    "emotion": it.get("emotion"),
+                    "confidence": it.get("confidence"),
+                    "sensitivity": it.get("sensitivity"),
+                }
+
+            return out
+
+        except Exception as e:
+            logger.error(f"Fallback classifier failed: {e}")
+            return {}
     async def get(self, memory_id):
         """
         Retrieve a memory by ID asynchronously.
@@ -2041,6 +2218,236 @@ class AsyncMemory(MemoryBase):
 
         return formatted_memories
 
+    from copy import deepcopy
+    from typing import Any, Dict, List, Optional
+    import asyncio
+    import json
+
+    # 依赖：logger, remove_code_blocks, extract_json, SEARCH_FILTER_PLANNER_PROMPT, MemoryItem
+
+    async def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
+        """
+        Async vector search with optional LLM-planned payload filters (ONLY mem_type + mem_category).
+
+        - Keeps existing session filters (user_id/agent_id/run_id/...)
+        - LLM decides whether to add mem_type/mem_category filters for faster + more relevant retrieval
+        - If results are too few, relax filters in order: mem_category -> mem_type
+        - Formats output: promote payload keys; put the rest into `metadata`
+        """
+        # 0) embeddings
+        embeddings = await asyncio.to_thread(self.embedding_model.embed, query, "search")
+
+        # 1) base filters (session scope etc.) - NEVER drop these
+        base_filters: Dict[str, Any] = deepcopy(filters or {})
+
+        # 2) LLM planner: decide mem_type/mem_category filters
+        plan_filters: Dict[str, Any] = {}
+        relax_order: List[str] = ["mem_category", "mem_type"]  # default fixed
+        planner_obj: Optional[Dict[str, Any]] = None
+
+        try:
+            planner_resp = await asyncio.to_thread(
+                self.llm.generate_response,
+                messages=[
+                    {"role": "system", "content": SEARCH_FILTER_PLANNER_PROMPT},
+                    {"role": "user", "content": query},
+                ],
+                response_format={"type": "json_object"},
+            )
+            planner_resp = remove_code_blocks(planner_resp)
+
+            try:
+                planner_obj = json.loads(planner_resp) if planner_resp.strip() else {}
+            except json.JSONDecodeError:
+                planner_obj = json.loads(extract_json(planner_resp))
+
+            if isinstance(planner_obj, dict) and planner_obj.get("use_filters") is True:
+                pf = planner_obj.get("filters") or {}
+                if isinstance(pf, dict):
+                    # strict whitelist: ONLY mem_type/mem_category
+                    if pf.get("mem_type") in {"semantic_fact", "episodic_event", "preference", "intention"}:
+                        plan_filters["mem_type"] = pf["mem_type"]
+
+                    if pf.get("mem_category") in {
+                        "personal_detail", "preference", "plan", "activity", "health",
+                        "professional", "relationship", "location", "education", "event", "misc"
+                    }:
+                        plan_filters["mem_category"] = pf["mem_category"]
+
+                # optional relax_order override (still whitelist)
+                ro = planner_obj.get("relax_order")
+                if isinstance(ro, list):
+                    cleaned = [x for x in ro if x in ("mem_category", "mem_type")]
+                    if cleaned:
+                        relax_order = cleaned
+
+        except Exception as e:
+            logger.warning(f"Filter planner failed (async), fallback to base filters only: {e}")
+            plan_filters = {}
+            relax_order = ["mem_category", "mem_type"]
+
+        # 3) stage A: search with strong filters
+        effective_filters = deepcopy(base_filters)
+        effective_filters.update(plan_filters)
+
+        memories = await asyncio.to_thread(
+            self.vector_store.search,
+            query=query,
+            vectors=embeddings,
+            limit=limit,
+            filters=effective_filters if effective_filters else None,
+        )
+
+        # 4) stage B: relax if too few
+        min_hits = max(5, min(20, limit // 3))
+        if plan_filters and len(memories) < min_hits:
+            relaxed_filters = deepcopy(effective_filters)
+
+            for k in relax_order:
+                if len(memories) >= min_hits:
+                    break
+
+                # only relax planned keys; never drop base/session keys
+                if k in plan_filters:
+                    relaxed_filters.pop(k, None)
+
+                    memories = await asyncio.to_thread(
+                        self.vector_store.search,
+                        query=query,
+                        vectors=embeddings,
+                        limit=limit,
+                        filters=relaxed_filters if relaxed_filters else None,
+                    )
+
+        # 5) formatting (保持你 async 原来的输出结构)
+        promoted_payload_keys = [
+            "user_id",
+            "agent_id",
+            "run_id",
+            "actor_id",
+            "role",
+        ]
+        core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", *promoted_payload_keys}
+
+        original_memories = []
+        for mem in memories:
+            memory_item_dict = MemoryItem(
+                id=mem.id,
+                memory=mem.payload.get("data", ""),
+                hash=mem.payload.get("hash"),
+                created_at=mem.payload.get("created_at"),
+                updated_at=mem.payload.get("updated_at"),
+                score=mem.score,
+            ).model_dump()
+
+            for key in promoted_payload_keys:
+                if key in mem.payload:
+                    memory_item_dict[key] = mem.payload[key]
+
+            additional_metadata = {k: v for k, v in mem.payload.items() if k not in core_and_promoted_keys}
+            if additional_metadata:
+                memory_item_dict["metadata"] = additional_metadata
+
+            if threshold is None or mem.score >= threshold:
+                original_memories.append(memory_item_dict)
+
+        return original_memories
+
+    def _process_metadata_filters(self, metadata_filters: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Process enhanced metadata filters and convert them to vector store compatible format.
+
+        Args:
+            metadata_filters: Enhanced metadata filters with operators
+
+        Returns:
+            Dict of processed filters compatible with vector store
+        """
+        processed_filters = {}
+
+        def process_condition(key: str, condition: Any) -> Dict[str, Any]:
+            if not isinstance(condition, dict):
+                # Simple equality: {"key": "value"}
+                if condition == "*":
+                    # Wildcard: match everything for this field (implementation depends on vector store)
+                    return {key: "*"}
+                return {key: condition}
+
+            result = {}
+            for operator, value in condition.items():
+                # Map platform operators to universal format that can be translated by each vector store
+                operator_map = {
+                    "eq": "eq", "ne": "ne", "gt": "gt", "gte": "gte",
+                    "lt": "lt", "lte": "lte", "in": "in", "nin": "nin",
+                    "contains": "contains", "icontains": "icontains"
+                }
+
+                if operator in operator_map:
+                    result[key] = {operator_map[operator]: value}
+                else:
+                    raise ValueError(f"Unsupported metadata filter operator: {operator}")
+            return result
+
+        for key, value in metadata_filters.items():
+            if key == "AND":
+                # Logical AND: combine multiple conditions
+                if not isinstance(value, list):
+                    raise ValueError("AND operator requires a list of conditions")
+                for condition in value:
+                    for sub_key, sub_value in condition.items():
+                        processed_filters.update(process_condition(sub_key, sub_value))
+            elif key == "OR":
+                # Logical OR: Pass through to vector store for implementation-specific handling
+                if not isinstance(value, list) or not value:
+                    raise ValueError("OR operator requires a non-empty list of conditions")
+                # Store OR conditions in a way that vector stores can interpret
+                processed_filters["$or"] = []
+                for condition in value:
+                    or_condition = {}
+                    for sub_key, sub_value in condition.items():
+                        or_condition.update(process_condition(sub_key, sub_value))
+                    processed_filters["$or"].append(or_condition)
+            elif key == "NOT":
+                # Logical NOT: Pass through to vector store for implementation-specific handling
+                if not isinstance(value, list) or not value:
+                    raise ValueError("NOT operator requires a non-empty list of conditions")
+                processed_filters["$not"] = []
+                for condition in value:
+                    not_condition = {}
+                    for sub_key, sub_value in condition.items():
+                        not_condition.update(process_condition(sub_key, sub_value))
+                    processed_filters["$not"].append(not_condition)
+            else:
+                processed_filters.update(process_condition(key, value))
+
+        return processed_filters
+
+    def _has_advanced_operators(self, filters: Dict[str, Any]) -> bool:
+        """
+        Check if filters contain advanced operators that need special processing.
+
+        Args:
+            filters: Dictionary of filters to check
+
+        Returns:
+            bool: True if advanced operators are detected
+        """
+        if not isinstance(filters, dict):
+            return False
+
+        for key, value in filters.items():
+            # Check for platform-style logical operators
+            if key in ["AND", "OR", "NOT"]:
+                return True
+            # Check for comparison operators (without $ prefix for universal compatibility)
+            if isinstance(value, dict):
+                for op in value.keys():
+                    if op in ["eq", "ne", "gt", "gte", "lt", "lte", "in", "nin", "contains", "icontains"]:
+                        return True
+            # Check for wildcard values
+            if value == "*":
+                return True
+        return False
     async def search(
         self,
         query: str,
@@ -2147,103 +2554,7 @@ class AsyncMemory(MemoryBase):
             return {"results": original_memories, "relations": graph_entities}
 
         return {"results": original_memories}
-
-    def _process_metadata_filters(self, metadata_filters: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Process enhanced metadata filters and convert them to vector store compatible format.
-
-        Args:
-            metadata_filters: Enhanced metadata filters with operators
-
-        Returns:
-            Dict of processed filters compatible with vector store
-        """
-        processed_filters = {}
-
-        def process_condition(key: str, condition: Any) -> Dict[str, Any]:
-            if not isinstance(condition, dict):
-                # Simple equality: {"key": "value"}
-                if condition == "*":
-                    # Wildcard: match everything for this field (implementation depends on vector store)
-                    return {key: "*"}
-                return {key: condition}
-
-            result = {}
-            for operator, value in condition.items():
-                # Map platform operators to universal format that can be translated by each vector store
-                operator_map = {
-                    "eq": "eq", "ne": "ne", "gt": "gt", "gte": "gte",
-                    "lt": "lt", "lte": "lte", "in": "in", "nin": "nin",
-                    "contains": "contains", "icontains": "icontains"
-                }
-
-                if operator in operator_map:
-                    result[key] = {operator_map[operator]: value}
-                else:
-                    raise ValueError(f"Unsupported metadata filter operator: {operator}")
-            return result
-
-        for key, value in metadata_filters.items():
-            if key == "AND":
-                # Logical AND: combine multiple conditions
-                if not isinstance(value, list):
-                    raise ValueError("AND operator requires a list of conditions")
-                for condition in value:
-                    for sub_key, sub_value in condition.items():
-                        processed_filters.update(process_condition(sub_key, sub_value))
-            elif key == "OR":
-                # Logical OR: Pass through to vector store for implementation-specific handling
-                if not isinstance(value, list) or not value:
-                    raise ValueError("OR operator requires a non-empty list of conditions")
-                # Store OR conditions in a way that vector stores can interpret
-                processed_filters["$or"] = []
-                for condition in value:
-                    or_condition = {}
-                    for sub_key, sub_value in condition.items():
-                        or_condition.update(process_condition(sub_key, sub_value))
-                    processed_filters["$or"].append(or_condition)
-            elif key == "NOT":
-                # Logical NOT: Pass through to vector store for implementation-specific handling
-                if not isinstance(value, list) or not value:
-                    raise ValueError("NOT operator requires a non-empty list of conditions")
-                processed_filters["$not"] = []
-                for condition in value:
-                    not_condition = {}
-                    for sub_key, sub_value in condition.items():
-                        not_condition.update(process_condition(sub_key, sub_value))
-                    processed_filters["$not"].append(not_condition)
-            else:
-                processed_filters.update(process_condition(key, value))
-
-        return processed_filters
-
-    def _has_advanced_operators(self, filters: Dict[str, Any]) -> bool:
-        """
-        Check if filters contain advanced operators that need special processing.
-
-        Args:
-            filters: Dictionary of filters to check
-
-        Returns:
-            bool: True if advanced operators are detected
-        """
-        if not isinstance(filters, dict):
-            return False
-
-        for key, value in filters.items():
-            # Check for platform-style logical operators
-            if key in ["AND", "OR", "NOT"]:
-                return True
-            # Check for comparison operators (without $ prefix for universal compatibility)
-            if isinstance(value, dict):
-                for op in value.keys():
-                    if op in ["eq", "ne", "gt", "gte", "lt", "lte", "in", "nin", "contains", "icontains"]:
-                        return True
-            # Check for wildcard values
-            if value == "*":
-                return True
-        return False
-
+    
     async def _search_vector_store(self, query, filters, limit, threshold: Optional[float] = None):
         embeddings = await asyncio.to_thread(self.embedding_model.embed, query, "search")
         memories = await asyncio.to_thread(

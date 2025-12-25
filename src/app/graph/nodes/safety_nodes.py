@@ -5,8 +5,8 @@
 from typing import Dict, Any
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.graph.state import PipelineState
-from app.graph.nodes.llm_nodes import get_model
+from src.app.graph.state import PipelineState
+from src.app.graph.nodes.llm_nodes import get_model
 
 
 # ==================== 输入安全检查节点 ====================

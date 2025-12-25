@@ -3,7 +3,7 @@
 条件判断和流程控制
 """
 from typing import Literal
-from app.graph.state import PipelineState
+from src.app.graph.state import PipelineState
 
 
 # ==================== 安全检查后的路由 ====================

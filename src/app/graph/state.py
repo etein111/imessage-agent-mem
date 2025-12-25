@@ -35,7 +35,9 @@ class PipelineState(TypedDict):
     
     # 记忆相关
     short_term_memory: List[str]
-    
+    long_term_memory: List[str]
+    prev_summary:str
+
     # 安全标记 (V3)
     safety_status: Optional[str]  # "safe" | "unsafe" | "rewritten"
     
@@ -82,6 +84,8 @@ def create_initial_state(
         "goal_instruction": None,
         "tool_results": None,
         "tool_to_call": None,
+        'long_term_memory': [],
+        'prev_summary': None,
     }
     return state
 
