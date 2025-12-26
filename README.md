@@ -95,13 +95,13 @@ export PERSONA_NAME=youci
 
 ```python
 # 导入状态
-from src.app.graph import PipelineState
+from app.graph import PipelineState
 
 # 导入节点
-from src.app.graph import load_context_node, generate_reply_simple_node
+from app.graph import load_context_node, generate_reply_simple_node
 
 # 导入工作流
-from src.app.graph.workflows.chat_workflow import graph
+from app.graph import graph
 
 # 使用
 result = await graph.ainvoke({

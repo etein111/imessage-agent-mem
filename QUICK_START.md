@@ -7,6 +7,9 @@ cd /Users/weitianyi/Desktop/xbuddy/langgraph/my_langgraph_app
 ./run_with_monitor.sh
 ```
 
+'''powershell
+langgraph dev --host 127.0.0.1 --port 2024
+'''
 ---
 
 ## 🌐 访问地址

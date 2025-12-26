@@ -16,7 +16,7 @@ async def test_system_commands():
     print("=" * 70)
     
     # 导入工作流
-    from src.app.graph.workflows.chat_workflow import graph
+    from app.graph import graph
     
     # 配置
     thread_id = "test-system-commands-123"
