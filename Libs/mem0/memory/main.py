@@ -1750,12 +1750,9 @@ class AsyncMemory(MemoryBase):
                         "fact_schema_version": "v2_structured",
                         "mem_category": f.get("mem_category"),
                         "mem_type": f.get("mem_type"),
-                        "entities": f.get("entities", []) if isinstance(f.get("entities"), list) else [],
                         "time": f.get("time"),
                         "sentiment": f.get("sentiment"),
                         "emotion": f.get("emotion"),
-                        "confidence": f.get("confidence"),
-                        "sensitivity": f.get("sensitivity"),
                     }
 
             # OLD: list[str]
@@ -2052,12 +2049,9 @@ class AsyncMemory(MemoryBase):
                     "fact_schema_version": "v2_fallback_classifier",
                     "mem_category": it.get("mem_category"),
                     "mem_type": it.get("mem_type"),
-                    "entities": it.get("entities", []) if isinstance(it.get("entities"), list) else [],
                     "time": it.get("time"),
                     "sentiment": it.get("sentiment"),
                     "emotion": it.get("emotion"),
-                    "confidence": it.get("confidence"),
-                    "sensitivity": it.get("sensitivity"),
                 }
 
             return out
