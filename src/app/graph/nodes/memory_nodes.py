@@ -2,18 +2,19 @@
 记忆管理节点
 负责加载和保存对话记忆，以及触发记忆整理仪式
 """
+import json
 from typing import Dict, Any,List
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.graph.state import PipelineState
-from app.memory.redis_store import redis_store
+from src.app.graph.state import PipelineState
+from src.app.memory.redis_store import redis_store
 
-from app.graph.nodes.llm_nodes import (
+from src.app.graph.nodes.llm_nodes import (
     check_fragment_intent_node,
     generate_fragment_node,
     consolidate_memory_node
 )
-from app.memory.mem0_store import AsyncMem0Adapter,build_mem0_adapter
+from src.app.memory.mem0_store import AsyncMem0Adapter,build_mem0_adapter
 _mem0_singleton = None
 
 async def get_mem0() -> AsyncMem0Adapter:
@@ -46,47 +47,31 @@ async def _persist_overflow_to_mem0(user_id: str, overflow_msgs: list):
         logger.warning("mem0 persist timeout user_id=%s", user_id)
     except Exception as e:
         logger.exception("mem0 persist failed user_id=%s err=%s", user_id, e)
+def _to_text(x) -> str:
+    if x is None:
+        return ""
+    if isinstance(x, list):
+        return "\n".join(str(i) for i in x if i is not None).strip()
+    return str(x).strip()
 
-def _format_mem0_hits_to_list(hits) -> List[str]:
-    """
-    将 mem0 search 结果格式化为字符串列表
-    每一条 = 一条长期记忆
-    """
-    if not hits:
-        return []
-
-    # mem0 可能返回 {"results":[...]} 或直接是 list
-    if isinstance(hits, dict):
-        hits = hits.get("results", [])
-
-    if not hits:
-        return []
-
-    memories: List[str] = []
-
-    for h in hits:
-        text = (h.get("memory") or h.get("text") or "").strip()
-        if not text:
-            continue
-        memories.append(text)
-
-    return memories
 
 # ==================== 加载上下文节点 ====================
+
 async def load_context_node(state: PipelineState) -> Dict[str, Any]:
     user_id = state.get("user_id", "default_user")
 
-    # 1. 加载摘要 (上十轮的总结)
+    # 1) Redis: summary
     prev_summary = await redis_store.get_summary(user_id)
 
-    # 2. 加载对话 (拉取 Redis 里最近的 20 条 / 10轮)
+    # 2) Redis: short-term raw dialogue
     raw_history = await redis_store.get_context(user_id, limit=20)
-
     short_term_memory = [
-        HumanMessage(content=m['content']) if m['role'] == 'user' else AIMessage(content=m['content'])
+        HumanMessage(content=m["content"]) if m["role"] == "user" else AIMessage(content=m["content"])
         for m in raw_history
+        if m.get("role") in ("user", "assistant") and m.get("content") is not None
     ]
-    # 3. mem0 长期记忆检索：用“最新用户输入”作为 query
+
+    # 3) 最新用户输入 -> query
     messages = state.get("messages", [])
     last_user_content = ""
     for m in reversed(messages):
@@ -95,26 +80,43 @@ async def load_context_node(state: PipelineState) -> Dict[str, Any]:
             break
 
     if isinstance(last_user_content, list):
-        text_parts = []
+        parts = []
         for part in last_user_content:
             if isinstance(part, dict) and "text" in part:
-                text_parts.append(part["text"])
+                parts.append(part["text"])
             elif isinstance(part, str):
-                text_parts.append(part)
-        last_user_text = "".join(text_parts)
+                parts.append(part)
+        query = "".join(parts).strip()
     else:
-        # 确保是字符串 (处理 None 或其他类型)
-        last_user_text = str(last_user_content) if last_user_content else ""
+        query = str(last_user_content or "").strip()
 
-    query = last_user_text.strip() or "conversation context"
+    if not query:
+        query = "conversation context"
+
+    # 4) mem0: 长期记忆（强约束：必须返回分层 dict）
     mem0 = await get_mem0()
-    hits = await mem0.search(query, user_id=user_id, limit=8)
-    long_term_memory = _format_mem0_hits_to_list(hits)
+    layered = await mem0.search(query, user_id=user_id, limit=5)
+
+    # 这里不做兼容：直接假设 layered 是 {"profile": [...], "episodic": [...], "working": [...]}
+    if not isinstance(layered, dict) or not all(k in layered for k in ("profile", "episodic", "working")):
+        raise ValueError(f"mem0.search must return layered dict, got={type(layered)} keys={getattr(layered,'keys',lambda:[])()}")
+
+    logger.info(
+        "[ContextLoad] user_id=%s | query=%s | short_term=%d | profile=%d episodic=%d working=%d",
+        user_id,
+        query,
+        len(short_term_memory),
+        len(layered.get("profile") or []),
+        len(layered.get("episodic") or []),
+        len(layered.get("working") or []),
+    )
+
     return {
-            "short_term_memory": short_term_memory,
-            "prev_summary": prev_summary,
-            "long_term_memory": long_term_memory,
-        }
+        "short_term_memory": short_term_memory,
+        "prev_summary": prev_summary,
+        "long_term_memory_layered": layered,
+        "query": query,
+    }
 
 
 # ==================== 保存记忆节点 ====================
@@ -129,8 +131,8 @@ async def save_memory_node(state: PipelineState, config=None) -> Dict[str, Any]:
     if not (last_human and last_ai): return {}
 
     # 1. 存入 Redis
-    await redis_store.add_message(user_id, "user", last_human)
-    await redis_store.add_message(user_id, "assistant", last_ai)
+    await redis_store.add_message(user_id, "user", _to_text(last_human))
+    await redis_store.add_message(user_id, "assistant", _to_text(last_ai))
 
     extra_messages = []
 
@@ -165,7 +167,7 @@ async def save_memory_node(state: PipelineState, config=None) -> Dict[str, Any]:
             print(f"摘要已更新: {new_summary[:20]}...")
 
     # 不阻塞主流程：后台写 mem0
-    asyncio.create_task(_persist_overflow_to_mem0(user_id, overflow_msgs))
+        asyncio.create_task(_persist_overflow_to_mem0(user_id, overflow_msgs))
 
     # 返回更新后的状态
     return {"messages": extra_messages} if extra_messages else {}

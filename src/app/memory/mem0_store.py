@@ -8,8 +8,8 @@ libs_path = os.path.join(project_root, "Libs")
 
 if libs_path not in sys.path:
     sys.path.insert(0, libs_path)
-from mem0 import AsyncMemory
-from app.config import MEM0_CONFIG
+from mem0.memory.main import AsyncMemory
+from src.app.config import MEM0_CONFIG
 
 class AsyncMem0Adapter:
     def __init__(self, memory: AsyncMemory):
@@ -49,14 +49,18 @@ class AsyncMem0Adapter:
         limit: int = 5,
         threshold: Optional[float] = None,
     ):
-        return await self.memory.search(
-                query,
-                user_id=user_id,
-                agent_id=agent_id,
-                run_id=run_id,
-                limit=limit,
-                threshold=threshold,
+        res = await self.memory.search(
+            query,
+            user_id=user_id,
+            agent_id=agent_id,
+            run_id=run_id,
+            limit=limit,
+            threshold=threshold,
         )
+        if isinstance(res, dict) and {"profile", "episodic", "working"} <= set(res.keys()):
+            return res
+        return {"profile": [], "episodic": [], "working": []}
+
 
     def _convert_messages(self, messages: Sequence[Any]) -> List[Dict[str, Any]]:
         out: List[Dict[str, Any]] = []

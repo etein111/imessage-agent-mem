@@ -2,9 +2,6 @@ import json
 import time
 import redis.asyncio as redis
 from typing import List, Dict, Optional, Any
-
-from watchfiles import awatch
-
 from app.config import get_redis_config
 
 class RedisMemoryStore:
@@ -23,6 +20,18 @@ class RedisMemoryStore:
 
     def _get_summary_key(self, user_id):
         return f"summary:{user_id}"
+
+    def _get_profile_key(self, user_id):
+        return f"profile:{user_id}"
+
+    def _get_episodic_key(self, user_id):
+        return f"episodic:{user_id}"
+
+    def _get_working_key(self, user_id):
+        return f"working:{user_id}"
+
+    def _get_profile_facts_key(self, user_id):
+        return f"profile_facts:{user_id}"
 
     async def add_message(self, user_id, role, content):
         msg = {"role": role, "content": content, "timestamp": time.time(), "time_str": time.strftime("%H:%M:%S")}
@@ -71,6 +80,101 @@ class RedisMemoryStore:
 
         return []
 
+    async def get_profile(self, user_id) -> str:
+        return await self.client.get(self._get_profile_key(user_id)) or ""
+
+    async def update_profile(self, user_id, profile: str):
+        await self.client.set(self._get_profile_key(user_id), profile)
+        await self.client.expire(self._get_profile_key(user_id), self.ttl * 30)
+
+    async def get_episodic_cache(self, user_id) -> List[str]:
+        key = self._get_episodic_key(user_id)
+        raw = await self.client.lrange(key, 0, -1)
+        return [json.loads(m) if isinstance(m, str) else json.loads(m.decode('utf-8')) for m in raw]
+
+    async def add_episodic_to_cache(self, user_id, episodic_memory: str):
+        key = self._get_episodic_key(user_id)
+        await self.client.rpush(key, json.dumps(episodic_memory))
+        await self.client.expire(key, self.ttl)
+        await self.client.ltrim(key, -50, -1)
+
+    async def get_episodic_cache_recent(self, user_id: str, limit: int = 10) -> List[str]:
+        key = self._get_episodic_key(user_id)
+        raw = await self.client.lrange(key, -limit, -1)
+        return [json.loads(m) if isinstance(m, str) else json.loads(m.decode('utf-8')) for m in raw]
+
+    async def get_working_memories(self, user_id, limit: int = 10) -> List[Dict]:
+        key = self._get_working_key(user_id)
+        raw = await self.client.lrange(key, -limit, -1)
+        return [json.loads(m) if isinstance(m, str) else json.loads(m.decode('utf-8')) for m in raw]
+
+    async def add_working_memory(self, user_id, memory_data: Dict):
+        key = self._get_working_key(user_id)
+        memory_data["timestamp"] = time.time()
+        await self.client.rpush(key, json.dumps(memory_data))
+        await self.client.expire(key, self.ttl)
+        await self.client.ltrim(key, -20, -1)
+
+    async def add_profile_fact(self, user_id: str, fact: str) -> bool:
+        """把一条 profile fact 加入 Redis set（自动去重）。返回是否新增。"""
+        fact = (fact or "").strip()
+        if not fact:
+            return False
+        key = self._get_profile_facts_key(user_id)
+        added = await self.client.sadd(key, fact)
+        await self.client.expire(key, self.ttl * 30)
+        return bool(added)
+
+    async def remove_profile_fact(self, user_id: str, fact: str) -> bool:
+        """从 Redis set 删除一条 fact。返回是否真的删除了。"""
+        fact = (fact or "").strip()
+        if not fact:
+            return False
+        key = self._get_profile_facts_key(user_id)
+        removed = await self.client.srem(key, fact)
+        await self.client.expire(key, self.ttl * 30)
+        return bool(removed)
+
+    async def list_profile_facts(self, user_id: str, limit: Optional[int] = None) -> List[str]:
+        """列出 profile facts（set 无序；如需稳定顺序可加排序策略）。"""
+        key = self._get_profile_facts_key(user_id)
+        raw = await self.client.smembers(key)
+        facts = []
+        for m in raw:
+            if isinstance(m, bytes):
+                facts.append(m.decode("utf-8"))
+            else:
+                facts.append(str(m))
+        facts = [f.strip() for f in facts if f and str(f).strip()]
+        # 可选：做一个稳定排序（例如字典序），保证拼接文本稳定
+        facts.sort()
+        if limit is not None and limit > 0:
+            facts = facts[-limit:]
+        return facts
+
+    async def replace_profile_fact(self, user_id: str, old_fact: str, new_fact: str) -> bool:
+        """
+        用 set 近似实现 UPDATE：删 old 加 new。
+        返回是否发生了变化。
+        """
+        old_fact = (old_fact or "").strip()
+        new_fact = (new_fact or "").strip()
+        if not new_fact:
+            return False
+        changed = False
+        if old_fact and old_fact != new_fact:
+            removed = await self.remove_profile_fact(user_id, old_fact)
+            changed = changed or removed
+        added = await self.add_profile_fact(user_id, new_fact)
+        changed = changed or added
+        return changed
+
+    async def rebuild_profile_text(self, user_id: str, limit: Optional[int] = None) -> str:
+        """从 facts 重建 profile 拼接文本，并写回 profile:{user_id} 这个字符串 key（兼容旧接口）。"""
+        facts = await self.list_profile_facts(user_id, limit=limit)
+        profile_text = "\n".join(facts)
+        await self.update_profile(user_id, profile_text)
+        return profile_text
 
 # 全局实例
 redis_store = RedisMemoryStore()

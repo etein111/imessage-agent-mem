@@ -2,6 +2,10 @@
 LLM 调用节点
 所有与大模型交互的节点函数
 """
+import logging
+
+logger = logging.getLogger(__name__)
+
 import asyncio
 from typing import Dict, Any
 from langchain_core.messages import SystemMessage, HumanMessage
@@ -11,8 +15,8 @@ try:
 except ImportError:
     from langchain_core.pydantic_v1 import BaseModel, Field
 
-from app.graph.state import PipelineState
-from app.config import get_llm_model, get_system_prompt
+from src.app.graph.state import PipelineState
+from src.app.config import get_llm_model, get_system_prompt
 
 
 # ==================== 模型获取 ====================
@@ -36,29 +40,19 @@ async def generate_reply_simple_node(state: PipelineState, config=None) -> Dict[
     """
     model = await get_model()
 
-    # System Prompt (人设)
+    # 1) system_prompt：只保留 persona + goal +（可选）摘要
     current_persona = state.get("current_persona")
-    if current_persona:
-        system_prompt = current_persona
-    else:
-        system_prompt = get_system_prompt()
+    system_prompt = current_persona or get_system_prompt()
 
-    # 注入前情提要 (摘要)
     prev_summary = state.get("prev_summary", "")
     if prev_summary:
         system_prompt += f"\n\n【前情提要】\n{prev_summary}"
-
-    ltm_list = state.get("long_term_memory", [])
-
-    if ltm_list:
-        # 将列表 ['a', 'b'] 转换为字符串 "- a\n- b"
-        ltm_context = "\n".join([f"- {mem}" for mem in ltm_list])
-        system_prompt += f"\n\n【相关长期记忆】\n{ltm_context}"
 
     goal_instruction = state.get("goal_instruction", "")
     if goal_instruction:
         system_prompt += f"\n\n{goal_instruction}"
 
+    # 2) 组装 messages：短期对话 + 最新用户输入
     full_messages = list(state.get("short_term_memory", []))
 
     incoming_messages = state.get("messages", [])
@@ -67,11 +61,51 @@ async def generate_reply_simple_node(state: PipelineState, config=None) -> Dict[
         if isinstance(last_msg, HumanMessage):
             full_messages.append(last_msg)
 
+    # 3) 插入 system prompt（只做人设/规则）
     full_messages.insert(0, SystemMessage(content=system_prompt))
 
-    response = await model.ainvoke(full_messages, config=config)
+    # 4) 长期记忆不注入 system_prompt：改成单独一条“上下文消息”
+    layered = state.get("long_term_memory_layered") or {}
+    if layered and isinstance(layered, dict):
+        def _format_layer(items, title, max_items):
+            if not items:
+                return f"{title}: None"
+            lines = []
+            for x in items[:max_items]:
+                # 你的结构里是 dict: {id, memory, mem_type, source, metadata?...}
+                if isinstance(x, dict):
+                    txt = (x.get("memory") or "").strip()
+                    src = x.get("source")
+                    if src:
+                        lines.append(f"- {txt} (source={src})")
+                    else:
+                        lines.append(f"- {txt}")
+                else:
+                    lines.append(f"- {str(x)}")
+            return f"{title}:\n" + "\n".join(lines)
 
+        memory_context = "\n\n".join([
+            "【相关长期记忆】",
+            _format_layer(layered.get("profile"), "Profile", 1),
+            _format_layer(layered.get("episodic"), "Episodic (recent first)", 5),
+            _format_layer(layered.get("working"), "Working (recent first)", 5),
+        ])
+
+        # 关键：插在 system_prompt 后、短期对话前（让模型先看到但不污染 persona）
+        full_messages.insert(1, SystemMessage(content=memory_context))
+
+    # debug 打印
+    logger.info("========== FULL PROMPT MESSAGES BEGIN ==========")
+    for i, msg in enumerate(full_messages):
+        role = getattr(msg, "type", msg.__class__.__name__)
+        content = getattr(msg, "content", "")
+        logger.info("[%02d] role=%s | content:\n%s", i, role, content)
+    logger.info("========== FULL PROMPT MESSAGES END ==========")
+
+    response = await model.ainvoke(full_messages, config=config)
     return {"messages": [response]}
+
+
 
 
 # ==================== 生成回复节点 ====================
@@ -92,7 +126,7 @@ async def generate_reply_with_tools_node(state: PipelineState, config=None) -> D
 
     tool_context = "\n".join([f"{k}: {v}" for k, v in tool_results.items()])
     enhanced_prompt = f"""{system_prompt}
-
+    
 【工具查询结果】
 {tool_context}
 

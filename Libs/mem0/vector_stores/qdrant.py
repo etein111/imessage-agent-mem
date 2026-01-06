@@ -179,6 +179,16 @@ class Qdrant(VectorStoreBase):
             query_filter=query_filter,
             limit=limit,
         )
+        for i, p in enumerate(hits.points):
+            logger.info(
+                "[QdrantSearch] rank=%d | id=%s | score=%.4f | mem_category=%s | mem_type=%s | data=%s",
+                i + 1,
+                p.id,
+                p.score,
+                p.payload.get("mem_category"),
+                p.payload.get("mem_type"),
+                (p.payload.get("data") or "")[:120],
+            )
         return hits.points
 
     def delete(self, vector_id: int):
