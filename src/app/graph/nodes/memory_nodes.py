@@ -99,10 +99,6 @@ async def load_context_node(state: PipelineState) -> Dict[str, Any]:
     long_term_memory_layered = res.get("long_term_memory_layered", {})
     long_term_relations = res.get("relations")
 
-    # 这里不做兼容：直接假设 layered 是 {"profile": [...], "episodic": [...], "working": [...]}
-    if not isinstance(long_term_memory_layered, dict) or not all(k in long_term_memory_layered for k in ("profile", "episodic", "working")):
-        raise ValueError(f"mem0.search must return layered dict, got={type(long_term_memory_layered)} keys={getattr(long_term_memory_layered,'keys',lambda:[])()}")
-
     logger.info(
         "[ContextLoad] user_id=%s | query=%s | short_term=%d | profile=%d episodic=%d working=%d relations=%d",
         user_id,
