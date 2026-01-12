@@ -60,8 +60,8 @@ def _to_text(x) -> str:
 async def load_context_node(state: PipelineState) -> Dict[str, Any]:
     user_id = state.get("user_id", "default_user")
 
-    # 1) Redis: summary
-    prev_summary = await redis_store.get_summary(user_id)
+    # # 1) Redis: summary
+    # prev_summary = await redis_store.get_summary(user_id)
 
     # 2) Redis: short-term raw dialogue
     raw_history = await redis_store.get_context(user_id, limit=20)
@@ -95,26 +95,30 @@ async def load_context_node(state: PipelineState) -> Dict[str, Any]:
 
     # 4) mem0: 长期记忆（强约束：必须返回分层 dict）
     mem0 = await get_mem0()
-    layered = await mem0.search(query, user_id=user_id, limit=5)
+    res= await mem0.search(query, user_id=user_id, limit=5)
+    long_term_memory_layered = res.get("long_term_memory_layered", {})
+    long_term_relations = res.get("relations")
 
     # 这里不做兼容：直接假设 layered 是 {"profile": [...], "episodic": [...], "working": [...]}
-    if not isinstance(layered, dict) or not all(k in layered for k in ("profile", "episodic", "working")):
-        raise ValueError(f"mem0.search must return layered dict, got={type(layered)} keys={getattr(layered,'keys',lambda:[])()}")
+    if not isinstance(long_term_memory_layered, dict) or not all(k in long_term_memory_layered for k in ("profile", "episodic", "working")):
+        raise ValueError(f"mem0.search must return layered dict, got={type(long_term_memory_layered)} keys={getattr(long_term_memory_layered,'keys',lambda:[])()}")
 
     logger.info(
-        "[ContextLoad] user_id=%s | query=%s | short_term=%d | profile=%d episodic=%d working=%d",
+        "[ContextLoad] user_id=%s | query=%s | short_term=%d | profile=%d episodic=%d working=%d relations=%d",
         user_id,
         query,
         len(short_term_memory),
-        len(layered.get("profile") or []),
-        len(layered.get("episodic") or []),
-        len(layered.get("working") or []),
+        len(long_term_memory_layered.get("profile") or []),
+        len(long_term_memory_layered.get("episodic") or []),
+        len(long_term_memory_layered.get("working") or []),
+        len(long_term_relations),
     )
 
     return {
         "short_term_memory": short_term_memory,
-        "prev_summary": prev_summary,
-        "long_term_memory_layered": layered,
+        # "prev_summary": prev_summary,
+        "long_term_memory_layered": long_term_memory_layered,
+        "long_term_relations":long_term_relations,
         "query": query,
     }
 

@@ -35,7 +35,7 @@ class RedisMemoryStore:
 
     async def add_message(self, user_id, role, content):
         msg = {"role": role, "content": content, "timestamp": time.time(), "time_str": time.strftime("%H:%M:%S")}
-        await self.client.rpush(self._get_chat_key(user_id), json.dumps(msg))
+        await self.client.rpush(self._get_chat_key(user_id), json.dumps(msg, ensure_ascii=False))
         await self.client.expire(self._get_chat_key(user_id), self.ttl)
 
     async def get_context(self, user_id, limit=None) -> List[Dict]:
@@ -94,7 +94,7 @@ class RedisMemoryStore:
 
     async def add_episodic_to_cache(self, user_id, episodic_memory: str):
         key = self._get_episodic_key(user_id)
-        await self.client.rpush(key, json.dumps(episodic_memory))
+        await self.client.rpush(key, json.dumps(episodic_memory, ensure_ascii=False))
         await self.client.expire(key, self.ttl)
         await self.client.ltrim(key, -50, -1)
 
@@ -111,7 +111,7 @@ class RedisMemoryStore:
     async def add_working_memory(self, user_id, memory_data: Dict):
         key = self._get_working_key(user_id)
         memory_data["timestamp"] = time.time()
-        await self.client.rpush(key, json.dumps(memory_data))
+        await self.client.rpush(key, json.dumps(memory_data, ensure_ascii=False))
         await self.client.expire(key, self.ttl)
         await self.client.ltrim(key, -20, -1)
 

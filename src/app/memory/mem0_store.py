@@ -48,6 +48,7 @@ class AsyncMem0Adapter:
         run_id: Optional[str] = None,
         limit: int = 5,
         threshold: Optional[float] = None,
+        rerank: bool = True,
     ):
         res = await self.memory.search(
             query,
@@ -56,10 +57,9 @@ class AsyncMem0Adapter:
             run_id=run_id,
             limit=limit,
             threshold=threshold,
+            rerank=rerank,
         )
-        if isinstance(res, dict) and {"profile", "episodic", "working"} <= set(res.keys()):
-            return res
-        return {"profile": [], "episodic": [], "working": []}
+        return res
 
 
     def _convert_messages(self, messages: Sequence[Any]) -> List[Dict[str, Any]]:

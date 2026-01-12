@@ -38,10 +38,11 @@ class PipelineState(TypedDict):
     short_term_memory: List[BaseMessage]
 
     # 长期记忆
-    long_term_memory: List[str]
+    long_term_memory_layered: Dict[str, Any]
+    long_term_relations: Any
 
-    # 前情提要：Redis里的摘要
-    prev_summary: Optional[str]
+    # # 前情提要：Redis里的摘要
+    # prev_summary: Optional[str]
 
     # 当前人设：从文件加载的 Prompt
     current_persona: Optional[str]
@@ -87,7 +88,7 @@ def create_initial_state(
 
         # === 修改初始化部分 ===
         "short_term_memory": [],
-        "prev_summary": "",  # 默认为空字符串
+        # "prev_summary": "",  默认为空字符串
         "user_profile": {},  # 默认为空字典
         "current_persona": None,  # 默认为 None
         # ====================
@@ -99,7 +100,8 @@ def create_initial_state(
         "goal_instruction": None,
         "tool_results": None,
         "tool_to_call": None,
-        'long_term_memory': [],
+        'long_term_memory_layered': {},
+        'long_term_relations': [],
         'prev_summary': None,
     }
     return state

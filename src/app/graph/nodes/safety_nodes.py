@@ -5,8 +5,8 @@
 from typing import Dict, Any
 from langchain_core.messages import HumanMessage, AIMessage
 
-from app.graph.state import PipelineState
-from app.graph.nodes.llm_nodes import get_model
+from src.app.graph.state import PipelineState
+from src.app.graph.nodes.llm_nodes import get_model
 
 
 # ==================== 输入安全检查节点 ====================
@@ -50,54 +50,54 @@ async def safety_in_node(state: PipelineState, config=None) -> Dict[str, Any]:
 
 
 # ==================== 输出安全审核节点 ====================
-async def safety_out_node(state: PipelineState, config=None) -> Dict[str, Any]:
-    """
-    审核AI输出，必要时重写
-    来源: pipeline_chat_v3.py
-    """
-    model = await get_model()
-    
-    # 获取最后一条AI消息
-    messages = list(state.get("messages", []))
-    ai_message = None
-    ai_index = None
-    
-    for i in range(len(messages) - 1, -1, -1):
-        if isinstance(messages[i], AIMessage):
-            ai_message = messages[i].content
-            ai_index = i
-            break
-    
-    if not ai_message:
-        return {}
-    
-    # 构建审核提示
-    review_prompt = f"""你是内容安全审核专家。请审核以下AI回复是否合适。
-
-【AI回复】
-{ai_message}
-
-判断标准:
-- 包含不当内容、过度建议、超出能力范围的承诺 → rewrite
-- 正常友好的回复 → safe
-
-如果需要重写，请直接给出修改后的内容。
-如果安全，回复: safe"""
-    
-    response = await model.ainvoke([HumanMessage(content=review_prompt)], config={"callbacks": []})
-    
-    result = response.content.strip()
-    
-    # 如果需要重写
-    if "safe" not in result.lower():
-        # 替换AI消息
-        messages[ai_index] = AIMessage(content=result)
-        return {
-            "messages": messages,
-            "safety_status": "rewritten"
-        }
-    
-    return {"safety_status": "safe"}
+# async def safety_out_node(state: PipelineState, config=None) -> Dict[str, Any]:
+#     """
+#     审核AI输出，必要时重写
+#     来源: pipeline_chat_v3.py
+#     """
+#     model = await get_model()
+#
+#     # 获取最后一条AI消息
+#     messages = list(state.get("messages", []))
+#     ai_message = None
+#     ai_index = None
+#
+#     for i in range(len(messages) - 1, -1, -1):
+#         if isinstance(messages[i], AIMessage):
+#             ai_message = messages[i].content
+#             ai_index = i
+#             break
+#
+#     if not ai_message:
+#         return {}
+#
+#     # 构建审核提示
+#     review_prompt = f"""你是内容安全审核专家。请审核以下AI回复是否合适。
+#
+# 【AI回复】
+# {ai_message}
+#
+# 判断标准:
+# - 包含不当内容、过度建议、超出能力范围的承诺 → rewrite
+# - 正常友好的回复 → safe
+#
+# 如果需要重写，请直接给出修改后的内容。
+# 如果安全，回复: safe"""
+#
+#     response = await model.ainvoke([HumanMessage(content=review_prompt)], config={"callbacks": []})
+#
+#     result = response.content.strip()
+#
+#     # 如果需要重写
+#     if "safe" not in result.lower():
+#         # 替换AI消息
+#         messages[ai_index] = AIMessage(content=result)
+#         return {
+#             "messages": messages,
+#             "safety_status": "rewritten"
+#         }
+#
+#     return {"safety_status": "safe"}
 
 
 # ==================== 生成安全回复 ====================

@@ -4,8 +4,8 @@
 """
 from langgraph.graph import StateGraph, END
 
-from app.graph.state import PipelineState
-from app.graph.nodes import (
+from src.app.graph.state import PipelineState
+from src.app.graph.nodes import (
     # Memory
     load_context_node,
     save_memory_node,
@@ -13,12 +13,12 @@ from app.graph.nodes import (
     # LLM
     generate_reply_simple_node,
     generate_reply_with_tools_node,
-    estimate_state_node,
+    # estimate_state_node,
     plan_goal_node,
     
     # Safety
     safety_in_node,
-    safety_out_node,
+    # safety_out_node,
     generate_safety_response,
     
     # Tools
@@ -83,14 +83,14 @@ def create_chat_workflow() -> StateGraph:
     workflow.add_node("list_personas", list_personas_node)
     workflow.add_node("switch_persona", switch_persona_node)
 
-    workflow.add_node("estimate_state", estimate_state_node)
+    # workflow.add_node("estimate_state", estimate_state_node)
     workflow.add_node("plan_goal", plan_goal_node)
     workflow.add_node("safety_in", safety_in_node)
     workflow.add_node("generate_safety_response", generate_safety_response)
     workflow.add_node("call_tools", call_tools_node)
     workflow.add_node("generate_reply_simple", generate_reply_simple_node)
     workflow.add_node("generate_reply_with_tools", generate_reply_with_tools_node)
-    workflow.add_node("safety_out", safety_out_node)
+    # workflow.add_node("safety_out", safety_out_node)
     workflow.add_node("save_memory", save_memory_node)
     
     # 设置入口点
@@ -105,7 +105,8 @@ def create_chat_workflow() -> StateGraph:
             "help": "show_help",               # 显示帮助
             "list_personas": "list_personas",  # 列出提示词
             "switch_persona": "switch_persona",# 切换提示词
-            "normal": "estimate_state"         # 正常对话流程
+            # "normal": "estimate_state"         # 正常对话流程
+            "normal":"plan_goal"
         }
     )
     
@@ -116,7 +117,7 @@ def create_chat_workflow() -> StateGraph:
     workflow.add_edge("switch_persona", END)
     
     # 正常流程的固定边
-    workflow.add_edge("estimate_state", "plan_goal")
+    # workflow.add_edge("estimate_state", "plan_goal")
     workflow.add_edge("plan_goal", "safety_in")
     
     # 添加条件边: 安全检查后的路由
@@ -142,15 +143,17 @@ def create_chat_workflow() -> StateGraph:
     
     # 工具调用后生成回复
     workflow.add_edge("call_tools", "generate_reply_with_tools")
-    
+
     # 所有回复生成后都进入安全审核
-    workflow.add_edge("generate_reply_simple", "safety_out")
-    workflow.add_edge("generate_reply_with_tools", "safety_out")
+    # workflow.add_edge("generate_reply_simple", "safety_out")
+    # workflow.add_edge("generate_reply_with_tools", "safety_out")
+    workflow.add_edge("generate_reply_simple", "save_memory")
+    workflow.add_edge("generate_reply_with_tools", "save_memory")
     workflow.add_edge("generate_safety_response", "save_memory")  # 安全回复直接保存
-    
+
     # 审核后保存记忆
-    workflow.add_edge("safety_out", "save_memory")
-    
+    # workflow.add_edge("safety_out", "save_memory")
+
     # 保存后结束
     workflow.add_edge("save_memory", END)
     

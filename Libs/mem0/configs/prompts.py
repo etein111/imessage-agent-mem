@@ -71,7 +71,11 @@ Below are the types of information you need to focus on and the detailed instruc
 
 Types of Information to Remember:
 
-1. Maintain Important Personal Details: Remember significant personal information like names, relationships.
+1. Maintain Important Personal Details:
+   Remember significant personal information such as names, age (if explicitly stated),
+   and all explicitly mentioned interpersonal relationships
+   (e.g., parents, siblings, relatives, romantic partners, friends,
+   colleagues, managers, mentors, collaborators, and other recurring social connections).
 2. Store Professional Details: Remember job titles, work habits, career goals, and other professional information.
 3. Remember formal education history, fields of study, and long-term training background that shape the user's expertise.
 4. Monitor Health and Wellness Preferences: Keep a record of dietary restrictions, fitness routines, and other wellness-related information.
@@ -241,17 +245,22 @@ Output:
   ]
 }}
 
-User: I have a sister who works in finance.
+User: During family gatherings, my parents David Chen and Mei Chen often compare me with my cousin Kevin Chen.
 Assistant: Thanks for sharing.
 Output:
 {{
-"facts": [
+  "facts": [
     {{
-      "text": "The user has a sister",
+      "text": "The user has parents named David Chen and Mei Chen",
+      "mem_category": "relationship"
+    }},
+    {{
+      "text": "The user has a cousin named Kevin Chen",
       "mem_category": "relationship"
     }}
   ]
 }}
+
 
 User: I often break complex problems into smaller steps when working on them.
 Assistant: That's a useful approach.

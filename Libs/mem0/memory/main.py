@@ -2535,6 +2535,7 @@ class AsyncMemory(MemoryBase):
             filters: Optional[Dict[str, Any]],
             limit: int,
             threshold: Optional[float] = None,
+            rerank: bool = True,
     ) -> LayeredSearchResult:
         user_id = (filters or {}).get("user_id")
 
@@ -2754,6 +2755,22 @@ Total Redis Results: {len(all_redis_results)}
                 merged.append(item)
             return merged[:limit] if limit and limit > 0 else merged
 
+        async def _rerank_layer(layer_items: list[dict], topk: int) -> list[dict]:
+            # 你的 reranker 可能返回“重排后的 list[dict]”，也可能返回“(item, score)”之类
+            # 这里按最常见：返回同结构的 list
+            return await asyncio.to_thread(self.reranker.rerank, query, layer_items, topk)
+
+
+        if rerank and self.reranker:
+            for layer in ("profile", "episodic"):
+                items = vector_layer_results.get(layer) or []
+                if items:
+                    try:
+                        feed_k = min(len(items), max(limit * 3, limit))
+                        vector_layer_results[layer] = (await _rerank_layer(items[:feed_k], limit))[:limit]
+                    except Exception as e:
+                        logger.warning(f"[{layer}] rerank failed, keep original vector order: {e}")
+
         return {
             "profile": _merge_layer(three_layer_results["profile"], vector_layer_results["profile"]),
             "episodic": _merge_layer(three_layer_results["episodic"], vector_layer_results["episodic"]),
@@ -2932,7 +2949,7 @@ Total Redis Results: {len(all_redis_results)}
             },
         )
 
-        vector_store_task = asyncio.create_task(self._search_vector_store(query, effective_filters, limit, threshold))
+        vector_store_task = asyncio.create_task(self._search_vector_store(query, effective_filters, limit, threshold, rerank))
 
         graph_task = None
         if self.enable_graph:
@@ -2947,21 +2964,10 @@ Total Redis Results: {len(all_redis_results)}
             original_memories = await vector_store_task
             graph_entities = None
 
-        # Apply reranking if enabled and reranker is available
-        if rerank and self.reranker and original_memories:
-            try:
-                # Run reranking in thread pool to avoid blocking async loop
-                reranked_memories = await asyncio.to_thread(
-                    self.reranker.rerank, query, original_memories, limit
-                )
-                original_memories = reranked_memories
-            except Exception as e:
-                logger.warning(f"Reranking failed, using original results: {e}")
-
         if self.enable_graph:
-            return {"results": original_memories, "relations": graph_entities}
+            return {"long_term_memory_layered": original_memories, "relations": graph_entities}
 
-        return {"results": original_memories}
+        return original_memories
 
     async def update(self, memory_id, data):
         """

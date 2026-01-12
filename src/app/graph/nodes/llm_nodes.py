@@ -44,9 +44,9 @@ async def generate_reply_simple_node(state: PipelineState, config=None) -> Dict[
     current_persona = state.get("current_persona")
     system_prompt = current_persona or get_system_prompt()
 
-    prev_summary = state.get("prev_summary", "")
-    if prev_summary:
-        system_prompt += f"\n\n【前情提要】\n{prev_summary}"
+    # prev_summary = state.get("prev_summary", "")
+    # if prev_summary:
+    #     system_prompt += f"\n\n【前情提要】\n{prev_summary}"
 
     goal_instruction = state.get("goal_instruction", "")
     if goal_instruction:
@@ -66,7 +66,8 @@ async def generate_reply_simple_node(state: PipelineState, config=None) -> Dict[
 
     # 4) 长期记忆不注入 system_prompt：改成单独一条“上下文消息”
     layered = state.get("long_term_memory_layered") or {}
-    if layered and isinstance(layered, dict):
+    relations=state.get("long_term_relations") or []
+    if isinstance(layered, dict) or relations:
         def _format_layer(items, title, max_items):
             if not items:
                 return f"{title}: None"
@@ -84,15 +85,29 @@ async def generate_reply_simple_node(state: PipelineState, config=None) -> Dict[
                     lines.append(f"- {str(x)}")
             return f"{title}:\n" + "\n".join(lines)
 
+        def _format_relations(relations, max_items=5):
+            if not relations:
+                return "Relations: None"
+            lines = []
+            for r in relations[:max_items]:
+                try:
+                    lines.append(
+                        f"- {r.get('source')} --[{r.get('relationship')}]--> {r.get('destination')}"
+                    )
+                except Exception:
+                    lines.append(f"- {str(r)}")
+            return "Relations:\n" + "\n".join(lines)
+
         memory_context = "\n\n".join([
             "【相关长期记忆】",
             _format_layer(layered.get("profile"), "Profile", 1),
             _format_layer(layered.get("episodic"), "Episodic (recent first)", 5),
             _format_layer(layered.get("working"), "Working (recent first)", 5),
+            _format_relations(relations, max_items=5),
         ])
 
         # 关键：插在 system_prompt 后、短期对话前（让模型先看到但不污染 persona）
-        full_messages.insert(1, SystemMessage(content=memory_context))
+        full_messages.insert(1, HumanMessage(content=memory_context))
 
     # debug 打印
     logger.info("========== FULL PROMPT MESSAGES BEGIN ==========")
@@ -138,79 +153,92 @@ async def generate_reply_with_tools_node(state: PipelineState, config=None) -> D
 
 
 # ==================== 状态估计节点 ====================
-async def estimate_state_node(state: PipelineState, config=None) -> Dict[str, Any]:
-    model = await get_model()
-    short_term_memory = state.get("short_term_memory", [])
-    messages = state.get("messages", [])
-    current_user_msg = ""
-    for msg in reversed(messages):
-        if isinstance(msg, HumanMessage):
-            current_user_msg = msg.content
-            break
-
-    if short_term_memory:
-        # 格式化为 "human: 内容 \n ai: 内容"
-        memory_context = "\n".join(
-            [f"{msg.type}: {msg.content}" for msg in short_term_memory]
-
-        )
-    else:
-        memory_context = "无历史记录"
-
-    prompt = f"""你是一个情绪和对话类型分类专家。请分析用户的当前状态。
-
-【历史记忆】
-{memory_context}
-
-【当前用户消息】
-{current_user_msg}
-
-请分析:
-1. 用户情绪 (emotion): happy, sad, stressed, bored, neutral
-2. 对话类型 (dialogue_type): small_talk, support, task, onboarding
-
-输出格式:
-emotion: <情绪>
-dialogue_type: <类型>"""
-
-    response = await model.ainvoke([HumanMessage(content=prompt)])
-    content = response.content.lower()
-    emotion = "neutral"
-    dialogue_type = "small_talk"
-
-    for line in content.split("\n"):
-        if "emotion:" in line:
-            emotion = line.split(":")[-1].strip()
-        elif "dialogue_type:" in line:
-            dialogue_type = line.split(":")[-1].strip()
-
-    return {
-        "current_emotion": emotion,
-        "dialogue_type": dialogue_type
-    }
-
+# async def estimate_state_node(state: PipelineState, config=None) -> Dict[str, Any]:
+#     model = await get_model()
+#     short_term_memory = state.get("short_term_memory", [])
+#     messages = state.get("messages", [])
+#     current_user_msg = ""
+#     for msg in reversed(messages):
+#         if isinstance(msg, HumanMessage):
+#             current_user_msg = msg.content
+#             break
+#
+#     if short_term_memory:
+#         # 格式化为 "human: 内容 \n ai: 内容"
+#         memory_context = "\n".join(
+#             [f"{msg.type}: {msg.content}" for msg in short_term_memory]
+#
+#         )
+#     else:
+#         memory_context = "无历史记录"
+#
+#     prompt = f"""你是一个情绪和对话类型分类专家。请分析用户的当前状态。
+#
+# 【历史记忆】
+# {memory_context}
+#
+# 【当前用户消息】
+# {current_user_msg}
+#
+# 请分析:
+# 1. 用户情绪 (emotion): happy, sad, stressed, bored, neutral
+# 2. 对话类型 (dialogue_type): small_talk, support, task, onboarding
+#
+# 输出格式:
+# emotion: <情绪>
+# dialogue_type: <类型>"""
+#
+#     response = await model.ainvoke([HumanMessage(content=prompt)])
+#     content = response.content.lower()
+#     emotion = "neutral"
+#     dialogue_type = "small_talk"
+#
+#     for line in content.split("\n"):
+#         if "emotion:" in line:
+#             emotion = line.split(":")[-1].strip()
+#         elif "dialogue_type:" in line:
+#             dialogue_type = line.split(":")[-1].strip()
+#
+#     return {
+#         "current_emotion": emotion,
+#         "dialogue_type": dialogue_type
+#     }
+#
 
 # ==================== 目标规划节点 ====================
+import time
+import logging
+logger = logging.getLogger(__name__)
+
 async def plan_goal_node(state: PipelineState, config=None) -> Dict[str, Any]:
+    t0 = time.perf_counter()
+
+    t_get_model0 = time.perf_counter()
     model = await get_model()
+    t_get_model1 = time.perf_counter()
+
     emotion = state.get("current_emotion", "neutral")
     dialogue_type = state.get("dialogue_type", "small_talk")
     short_term_memory = state.get("short_term_memory", [])
     messages = state.get("messages", [])
 
+    # 找最后一条 HumanMessage
+    t_find0 = time.perf_counter()
     current_user_msg = ""
     for msg in reversed(messages):
         if isinstance(msg, HumanMessage):
             current_user_msg = msg.content
             break
+    t_find1 = time.perf_counter()
 
+    # 拼 memory_context
+    t_mem0 = time.perf_counter()
     recent_msgs = short_term_memory[-3:] if short_term_memory else []
     if recent_msgs:
-        memory_context = "\n".join(
-            [f"{msg.type}: {msg.content}" for msg in recent_msgs]
-        )
+        memory_context = "\n".join([f"{msg.type}: {msg.content}" for msg in recent_msgs])
     else:
         memory_context = "无历史"
+    t_mem1 = time.perf_counter()
 
     prompt = f"""你是一个对话策略规划专家。
 【用户情绪】{emotion}
@@ -228,8 +256,15 @@ tool: <工具名或none>
 goal: <目标>
 instruction: <具体指导>"""
 
+    # 关键：LLM 调用耗时
+    t_llm0 = time.perf_counter()
     response = await model.ainvoke([HumanMessage(content=prompt)])
-    content = response.content.lower()
+    t_llm1 = time.perf_counter()
+
+    content = (response.content or "").lower()
+
+    # 解析耗时
+    t_parse0 = time.perf_counter()
     tool_to_call = None
     current_goal = "casual_chat"
     goal_instruction = ""
@@ -243,13 +278,27 @@ instruction: <具体指导>"""
             current_goal = line.split(":")[-1].strip()
         elif "instruction:" in line:
             goal_instruction = line.split(":")[-1].strip()
+    t_parse1 = time.perf_counter()
+
+    t1 = time.perf_counter()
+
+    logger.info(
+        "[plan_goal_timing] total=%.3fs | get_model=%.3fs | find_msg=%.3fs | build_mem=%.3fs | llm=%.3fs | parse=%.3fs | prompt_len=%d | resp_len=%d",
+        (t1 - t0),
+        (t_get_model1 - t_get_model0),
+        (t_find1 - t_find0),
+        (t_mem1 - t_mem0),
+        (t_llm1 - t_llm0),
+        (t_parse1 - t_parse0),
+        len(prompt),
+        len(response.content or "")
+    )
 
     return {
         "current_goal": current_goal,
         "goal_instruction": goal_instruction,
         "tool_to_call": tool_to_call
     }
-
 
 # ==================== 记忆摘要生成 ====================
 async def summarize_interaction(model, user_input: str, ai_output: str) -> str:
