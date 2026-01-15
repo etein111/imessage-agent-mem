@@ -13,7 +13,7 @@ from typing import Any, Dict, Optional, List, Tuple
 from dataclasses import dataclass
 import pytz
 from pydantic import ValidationError
-
+from mem0.memory.time_metadata_builder import enrich_mem0_payload_time
 from mem0.configs.base import MemoryConfig, MemoryItem
 from mem0.configs.enums import MemoryType
 from mem0.configs.prompts import (
@@ -22,7 +22,7 @@ from mem0.configs.prompts import (
     USER_PROFILE_MEMORY_EXTRACTION_PROMPT, USER_EPISODIC_MEMORY_EXTRACTION_PROMPT,
     USER_WORKING_SESSION_MEMORY_EXTRACTION_PROMPT, FALLBACK_PROFILE_MEMORY_CLASSIFIER_PROMPT,
     FALLBACK_EPISODIC_MEMORY_CLASSIFIER_PROMPT, USER_PROFILE_MEMORY_UPDATE_PROMPT, USER_EPISODIC_MEMORY_UPDATE_PROMPT,
-    VECTOR_SEARCH_DECISION_PROMPT
+    VECTOR_SEARCH_DECISION_PROMPT,REDIS_LAYER_FILTER_PROMPT,
 )
 from mem0.exceptions import ValidationError as Mem0ValidationError
 from mem0.memory.base import MemoryBase
@@ -2186,6 +2186,11 @@ class AsyncMemory(MemoryBase):
 
                         elif mem_type == "episodic":
                             per_meta["mem_type"] = "episodic"
+                            if per_meta.get("time"):
+                                # 确保 created_at 存在（enrich_mem0_payload_time 需要）
+                                if "created_at" not in per_meta:
+                                    per_meta["created_at"] = datetime.now(pytz.timezone("US/Pacific")).isoformat()
+                                per_meta = enrich_mem0_payload_time(per_meta)
                             if event_type == "ADD":
                                 emb = await ensure_embedding(cache, action_text, "add")
                                 task = asyncio.create_task(
@@ -2309,65 +2314,6 @@ class AsyncMemory(MemoryBase):
             added_entities = await asyncio.to_thread(self.graph.add, data, filters)
 
         return added_entities
-
-    def _fallback_classify_memories(self, texts: List[str]) -> Dict[str, Dict[str, Any]]:
-        """
-        Batch classify action_texts that failed exact match with extracted facts.
-        Returns: {text -> extra_meta_dict}
-        """
-        if not texts:
-            return {}
-
-        # 去重但保持文本一致性
-        uniq = []
-        seen = set()
-        for t in texts:
-            t = (t or "").strip()
-            if t and t not in seen:
-                seen.add(t)
-                uniq.append(t)
-
-        payload = {"items": uniq}
-
-        try:
-            resp = self.llm.generate_response(
-                messages=[
-                    {"role": "system", "content": FALLBACK_MEMORY_CLASSIFIER_PROMPT},
-                    {"role": "user", "content": json.dumps(payload, ensure_ascii=False)},
-                ],
-                response_format={"type": "json_object"},
-            )
-            resp = remove_code_blocks(resp)
-
-            try:
-                obj = json.loads(resp)
-            except json.JSONDecodeError:
-                obj = json.loads(extract_json(resp))
-
-            items = obj.get("items", [])
-            out: Dict[str, Dict[str, Any]] = {}
-
-            for it in items:
-                if not isinstance(it, dict):
-                    continue
-                text = (it.get("text") or "").strip()
-                if not text:
-                    continue
-
-                out[text] = {
-                    "fact_schema_version": "v2_fallback_classifier",
-                    "mem_category": it.get("mem_category"),
-                    "mem_type": it.get("mem_type"),
-                    "time": it.get("time"),
-                    "sentiment": it.get("sentiment"),
-                    "emotion": it.get("emotion"),
-                }
-
-            return out
-
-        except Exception as e:
-            logger.error(f"Fallback classifier failed: {e}")
-            return {}
 
     async def get(self, memory_id):
         """
@@ -2529,6 +2475,352 @@ class AsyncMemory(MemoryBase):
         episodic: List[Dict[str, Any]]
         working: List[Dict[str, Any]]
 
+    def _filter_and_rank_by_time(
+            self,
+            memories: list,
+            query: str,
+            reference_time: datetime,
+            *,
+            limit: int | None = None,
+            min_keep_if_time_query: int = 3,
+            time_query_candidate_mul: int = 5,
+            use_recency_when_no_time: bool = True,
+            recency_tau_days: float = 60.0,
+            recency_alpha: float = 0.15,
+    ) -> list:
+        """
+        Upgraded episodic time-aware filtering & ranking.
+
+        Key behaviors:
+        - If query contains a time expression:
+            1) Extract best time expression (longest/highest-priority).
+            2) Hard-filter by overlap on [ts_start_epoch, ts_end_epoch] (prefer time_is_event==1).
+            3) Time-aware re-score using Jaccard overlap + center-distance decay.
+            4) If results < limit/min_keep_if_time_query, softly backfill from:
+                a) time_is_event==0 (unknown event time) with penalty
+                b) non-overlap but semantically strong items (with heavy penalty)
+        - If no time expression:
+            - Optionally apply a mild recency bias using dialogue_ts_epoch (or created_at fallback).
+
+        Assumptions:
+        - Each mem item has attributes: .payload (dict) and optionally .score (float).
+        - payload fields (episodic):
+            ts_start_epoch, ts_end_epoch, time_is_event (0/1), dialogue_ts_epoch (int seconds),
+            created_at (ISO), dialogue_ts (ISO) etc.
+
+        Returns:
+            A new list of mem objects (original objects untouched; ranking uses computed scores).
+        """
+        import re
+        import math
+        from datetime import datetime as _dt
+
+        # Local imports (your module)
+        from mem0.memory.time_metadata_builder import _parse_time_range_cn, _parse_iso_dt, _epoch_seconds
+
+        logger = globals().get("logger", None)
+
+        def _log_info(msg: str):
+            if logger:
+                logger.info(msg)
+
+        def _log_debug(msg: str):
+            if logger:
+                logger.debug(msg)
+
+        def _safe_score(m) -> float:
+            try:
+                s = getattr(m, "score", None)
+                return float(s) if s is not None else 0.0
+            except Exception:
+                return 0.0
+
+        def _get_payload(m) -> dict:
+            try:
+                return m.payload if hasattr(m, "payload") and isinstance(m.payload, dict) else {}
+            except Exception:
+                return {}
+
+        def _extract_best_time_text(q: str) -> str | None:
+            """
+            Find all candidate time expressions and pick the best one:
+            - Prefer higher-priority patterns
+            - For same priority, prefer longer match (more specific)
+            """
+            q0 = (q or "").strip()
+            if not q0:
+                return None
+
+            # Priority: more specific / longer patterns first
+            # NOTE: patterns cover CN digits and "半"
+            patterns = [
+                # explicit year-month / year-month-day
+                r"((19|20)\d{2})年(\d{1,2})月(\d{1,2})[日号]?",
+                r"((19|20)\d{2})年[0-9一二两三四五六七八九十]+月",
+                # relative year + month
+                r"(去年|今年|明年)[0-9一二两三四五六七八九十]+月",
+                # week+weekday with modifier
+                r"(上上周|上上星期|上周|上星期|本周|这周|这星期|本星期|下周|下星期)(周|星期)[一二三四五六日天]",
+                # week/month keywords
+                r"(上上周|上上星期|上周|上星期|本周|这周|这星期|本星期|下周|下星期)",
+                r"(上月|上个月|本月|这个月|这月|下月|下个月)",
+                # relative day keywords
+                r"(今天|昨日|昨天|昨晚|前天|明天|明晚|后天)",
+                # X days/weeks/months/years before/after (CN digits + 半 + arabic)
+                r"([0-9一二两三四五六七八九十半]+)天(前|后)",
+                r"([0-9一二两三四五六七八九十半]+)周(前|后)",
+                r"([0-9一二两三四五六七八九十半]+)个?月(前|后)",
+                r"([0-9一二两三四五六七八九十半]+)年(前|后)",
+                # weekday (recent)
+                r"(周|星期)[一二三四五六日天]",
+                # month/day without year
+                r"(\d{1,2})月(\d{1,2})[日号]?",
+                # month-only (CN digits / arabic)
+                r"[0-9一二两三四五六七八九十]+月",
+                # year only
+                r"((19|20)\d{2})年",
+                # year keywords
+                r"(去年|今年|明年)",
+            ]
+
+            best = None
+            best_pri = 10 ** 9
+            best_len = -1
+
+            for pri, pat in enumerate(patterns):
+                try:
+                    for m in re.finditer(pat, q0):
+                        txt = m.group(0)
+                        if not txt:
+                            continue
+                        L = len(txt)
+                        if pri < best_pri or (pri == best_pri and L > best_len):
+                            best = txt
+                            best_pri = pri
+                            best_len = L
+                except re.error:
+                    continue
+
+            return best
+
+        def _payload_epoch_from_iso(iso_str: str) -> int | None:
+            try:
+                dt = _parse_iso_dt(iso_str)
+                return _epoch_seconds(dt)
+            except Exception:
+                return None
+
+        def _get_dialogue_epoch(payload: dict) -> int | None:
+            # Prefer dialogue_ts_epoch if present; else fallback to created_at / dialogue_ts ISO.
+            v = payload.get("dialogue_ts_epoch")
+            if isinstance(v, (int, float)):
+                return int(v)
+            for k in ("dialogue_ts", "created_at"):
+                if payload.get(k):
+                    ep = _payload_epoch_from_iso(payload[k])
+                    if ep is not None:
+                        return ep
+            return None
+
+        def _compute_time_score(
+                original: float,
+                *,
+                q_start: int,
+                q_end: int,
+                m_start: int,
+                m_end: int,
+                time_is_event: int,
+        ) -> float:
+            """
+            Time-aware score multiplier:
+            - Jaccard overlap between intervals (preferred)
+            - Center-distance decay
+            - time_is_event penalty (unknown time shouldn't dominate)
+            """
+            # Ensure valid intervals
+            if m_end < m_start:
+                m_start, m_end = m_end, m_start
+            if q_end < q_start:
+                q_start, q_end = q_end, q_start
+
+            q_span = max(q_end - q_start, 1)
+            m_span = max(m_end - m_start, 1)
+
+            # Overlap
+            overlap_start = max(m_start, q_start)
+            overlap_end = min(m_end, q_end)
+            overlap = max(0, overlap_end - overlap_start)
+
+            union = m_span + q_span - overlap
+            jaccard = (overlap / union) if union > 0 else 0.0  # [0,1]
+
+            # Centers
+            q_center = (q_start + q_end) / 2.0
+            m_center = (m_start + m_end) / 2.0
+            center_dist = abs(m_center - q_center)
+
+            denom = max(q_span, 86400)  # at least 1 day scale for stability
+            distance_w = 1.0 / (1.0 + center_dist / (denom * 2.0))  # (0,1]
+
+            event_boost = 1.0 if int(time_is_event or 0) == 1 else 0.6
+            time_weight = event_boost * (0.7 * jaccard + 0.3 * distance_w)  # [0, ~1]
+
+            # Multiply original score
+            return original * (1.0 + time_weight)
+
+        def _apply_recency_boost(original: float, age_days: float) -> float:
+            """
+            Mild recency bias:
+            adjusted = score * (1 + alpha * exp(-age/tau))
+            """
+            try:
+                boost = math.exp(-max(age_days, 0.0) / max(recency_tau_days, 1e-6))
+            except Exception:
+                boost = 0.0
+            return original * (1.0 + float(recency_alpha) * boost)
+
+        # ---------------------------
+        # 0) Prepare
+        # ---------------------------
+        if not memories:
+            return memories
+
+        # If caller doesn't pass limit, infer from input size (no truncation)
+        effective_limit = int(limit) if isinstance(limit, int) and limit > 0 else None
+
+        # Optional: caller may pass more candidates already. If time query, we can keep more internally.
+        # (Do NOT slice here unless you want to cap compute; caller can pre-slice to limit*k)
+        # ---------------------------
+        # 1) Extract time expression
+        # ---------------------------
+        time_text = _extract_best_time_text(query)
+        query_time_range = None  # (epoch_start, epoch_end)
+
+        if time_text:
+            try:
+                iso_start, iso_end = _parse_time_range_cn(time_text, reference_time)
+                q_start = _epoch_seconds(_parse_iso_dt(iso_start))
+                q_end = _epoch_seconds(_parse_iso_dt(iso_end))
+                query_time_range = (q_start, q_end)
+                _log_info(f"[episodic] time_text='{time_text}' -> range=({q_start},{q_end})")
+            except Exception as e:
+                _log_debug(f"[episodic] failed parse time_text='{time_text}': {e}")
+                query_time_range = None
+
+        # ---------------------------
+        # 2) No time intent -> optional recency bias only
+        # ---------------------------
+        if not query_time_range:
+            if not use_recency_when_no_time:
+                return memories
+
+            now_epoch = int(reference_time.timestamp())
+            scored = []
+            for m in memories:
+                payload = _get_payload(m)
+                base = _safe_score(m)
+                d_ep = _get_dialogue_epoch(payload)
+                if d_ep is None:
+                    scored.append((base, m))
+                    continue
+                age_days = (now_epoch - d_ep) / 86400.0
+                adj = _apply_recency_boost(base, age_days)
+                scored.append((adj, m))
+
+            scored.sort(key=lambda x: x[0], reverse=True)
+            out = [m for _, m in scored]
+            if effective_limit is not None:
+                out = out[:effective_limit]
+            return out
+
+        # ---------------------------
+        # 3) Time intent -> hard filter by overlap, then time-aware re-score
+        # ---------------------------
+        q_start, q_end = query_time_range
+
+        overlap_event: list[tuple[float, Any]] = []
+        overlap_unknown: list[tuple[float, Any]] = []
+        no_time_info: list[tuple[float, Any]] = []
+        non_overlap: list[tuple[float, Any]] = []
+
+        for m in memories:
+            payload = _get_payload(m)
+            base = _safe_score(m)
+
+            ts_s = payload.get("ts_start_epoch")
+            ts_e = payload.get("ts_end_epoch")
+            time_is_event = int(payload.get("time_is_event", 0) or 0)
+
+            # No time metadata at all
+            if ts_s is None or ts_e is None:
+                # Keep for possible backfill, but penalize (unknown time)
+                no_time_info.append((base * 0.5, m))
+                continue
+
+            try:
+                ts_s = int(ts_s)
+                ts_e = int(ts_e)
+            except Exception:
+                no_time_info.append((base * 0.5, m))
+                continue
+
+            has_overlap = not (ts_e < q_start or ts_s > q_end)
+
+            if not has_overlap:
+                # Keep as last-resort backfill (heavy penalty)
+                non_overlap.append((base * 0.2, m))
+                continue
+
+            # Overlap => time-aware score
+            adj = _compute_time_score(base, q_start=q_start, q_end=q_end, m_start=ts_s, m_end=ts_e,
+                                      time_is_event=time_is_event)
+
+            if time_is_event == 1:
+                overlap_event.append((adj, m))
+            else:
+                # time_is_event==0: overlap exists only because we used created_at as point; keep but lower
+                overlap_unknown.append((adj * 0.8, m))
+
+        # Sort each bucket
+        overlap_event.sort(key=lambda x: x[0], reverse=True)
+        overlap_unknown.sort(key=lambda x: x[0], reverse=True)
+        no_time_info.sort(key=lambda x: x[0], reverse=True)
+        non_overlap.sort(key=lambda x: x[0], reverse=True)
+
+        # Compose final list with priority
+        merged_scored: list[tuple[float, Any]] = []
+        merged_scored.extend(overlap_event)
+        merged_scored.extend(overlap_unknown)
+
+        # Determine how many we want
+        want = effective_limit if effective_limit is not None else None
+
+        # If overlap results too few, backfill cautiously
+        def _count_now() -> int:
+            return len(merged_scored)
+
+        # Ensure at least min_keep_if_time_query if possible
+        target_min = min_keep_if_time_query if (want is None) else min(min_keep_if_time_query, want)
+
+        if _count_now() < target_min:
+            # Prefer unknown-time overlap first, already included; now backfill no_time_info then non_overlap
+            merged_scored.extend(no_time_info)
+            merged_scored.extend(non_overlap)
+
+        # If want is specified, trim
+        if want is not None:
+            merged_scored = merged_scored[:want]
+
+        out = [m for _, m in merged_scored]
+
+        _log_info(
+            f"[episodic] time_filter: input={len(memories)} "
+            f"overlap_event={len(overlap_event)} overlap_unknown={len(overlap_unknown)} "
+            f"no_time={len(no_time_info)} non_overlap={len(non_overlap)} -> output={len(out)}"
+        )
+
+        return out
+
     async def _search_vector_store(
             self,
             query: str,
@@ -2537,178 +2829,300 @@ class AsyncMemory(MemoryBase):
             threshold: Optional[float] = None,
             rerank: bool = True,
     ) -> LayeredSearchResult:
+        """
+        Final optimized version (no episodic 5→3).
+
+        Key latency wins:
+        - Start embeddings in background BUT do not await until we *know* vector search is needed.
+        - Redis 3-layer reads in parallel.
+        - LLM decision + LLM redis-filter in parallel.
+        - Vector store searches per-layer in parallel.
+        - Rerank per-layer in parallel.
+        - Merge is sync (cheap).
+
+        Notes:
+        - working layer never queries vector store (Redis only).
+        - episodic time filter is applied to vector results (kept as before).
+        """
+        from datetime import datetime
         user_id = (filters or {}).get("user_id")
+        reference_time = datetime.now(pytz.timezone("US/Pacific"))
 
-        async def search_all_three_layers(topk_per_layer: int = 5) -> Dict[str, List[Dict[str, Any]]]:
-            """Redis 三层：只取快照/最近N条，不做向量相似度（极快）。"""
-            all_results = {"profile": [], "episodic": [], "working": []}
+        # -------------------------
+        # Optional: global concurrency limiter for heavy blocking ops
+        # (embed / vector_store / reranker / llm)
+        # -------------------------
+        # You can tune this number based on your infra / CPU cores / rate limits.
+        sem: asyncio.Semaphore = getattr(self, "_search_sem", None)  # type: ignore
+        if sem is None:
+            sem = asyncio.Semaphore(8)
+            setattr(self, "_search_sem", sem)
 
+        async def _to_thread_limited(fn, *args, **kwargs):
+            async with sem:
+                return await asyncio.to_thread(fn, *args, **kwargs)
+
+        # -------------------------
+        # 0) Fire embeddings early, but DON'T await yet
+        # -------------------------
+        embed_task: asyncio.Task | None = None
+        if query and query.strip():
+            embed_task = asyncio.create_task(
+                _to_thread_limited(self.embedding_model.embed, query, "search")
+            )
+
+        # -------------------------
+        # 1) Redis 3-layer reads (parallel)
+        # -------------------------
+        async def _redis_profile() -> List[Dict[str, Any]]:
             if not REDIS_STORE_AVAILABLE or not user_id:
-                return all_results
-
-            # 1) Profile：直接取字符串快照
+                return []
             try:
                 profile_text = await redis_store.get_profile(user_id)
                 if profile_text:
-                    all_results["profile"].append({
+                    return [{
                         "id": "redis_profile",
                         "memory": profile_text,
                         "mem_type": "profile",
                         "source": "redis",
-                    })
+                    }]
             except Exception as e:
                 logger.warning(f"[profile] Error reading redis: {e}")
+            return []
 
-            # 2) Episodic：只取最近 topk_per_layer 条（或你想给 LLM 多一点就 *3）
+        async def _redis_episodic(topk: int) -> List[Dict[str, Any]]:
+            if not REDIS_STORE_AVAILABLE or not user_id:
+                return []
             try:
-                cached_episodic = await redis_store.get_episodic_cache_recent(user_id, limit=topk_per_layer)
-                recent =list(reversed(cached_episodic))
+                cached = await redis_store.get_episodic_cache_recent(user_id, limit=topk*4)
+                # keep your prior behavior
+                recent = list(reversed(cached))
+                out: List[Dict[str, Any]] = []
                 for i, mem in enumerate(recent):
                     text = mem if isinstance(mem, str) else (mem.get("text", "") if isinstance(mem, dict) else str(mem))
                     if text:
-                        all_results["episodic"].append({
+                        out.append({
                             "id": f"redis_episodic_{i}",
                             "memory": text,
                             "mem_type": "episodic",
                             "source": "redis",
                         })
+                return out
             except Exception as e:
                 logger.warning(f"[episodic] Error reading redis: {e}")
+            return []
 
-            # 3) Working：只取最近 topk_per_layer 条
+        async def _redis_working(topk: int) -> List[Dict[str, Any]]:
+            if not REDIS_STORE_AVAILABLE or not user_id:
+                return []
             try:
-                working_memories = await redis_store.get_working_memories(user_id, limit=topk_per_layer)
-                working_memories=list(reversed(working_memories))
-                for i, mem in enumerate(working_memories):
+                working = await redis_store.get_working_memories(user_id, limit=topk*4)
+                working = list(reversed(working))
+                out: List[Dict[str, Any]] = []
+                for i, mem in enumerate(working):
                     text = mem.get("text", "") if isinstance(mem, dict) else str(mem)
                     if text:
-                        all_results["working"].append({
+                        out.append({
                             "id": f"redis_working_{i}",
                             "memory": text,
                             "mem_type": "working",
                             "metadata": mem if isinstance(mem, dict) else {},
                             "source": "redis",
                         })
+                return out
             except Exception as e:
                 logger.warning(f"[working] Error reading redis: {e}")
+            return []
 
-            return all_results
+        profile_redis, episodic_redis, working_redis = await asyncio.gather(
+            _redis_profile(),
+            _redis_episodic(limit),
+            _redis_working(limit),
+        )
 
-        # 先搜索所有三层记忆（Redis）
-        three_layer_results = await search_all_three_layers(topk_per_layer=limit)
+        three_layer_results: Dict[str, List[Dict[str, Any]]] = {
+            "profile": profile_redis,
+            "episodic": episodic_redis,
+            "working": working_redis,
+        }
 
-        # 扁平化 Redis 结果（仅用于 LLM 决策，不再依赖 score 做排序）
-        all_redis_results = []
-        for layer_name in ["profile", "episodic", "working"]:
-            all_redis_results.extend(three_layer_results[layer_name])
+        def _flatten(layered: Dict[str, List[Dict[str, Any]]]) -> List[Dict[str, Any]]:
+            out: List[Dict[str, Any]] = []
+            for name in ("profile", "episodic", "working"):
+                out.extend(layered.get(name, []))
+            return out
+
+        all_redis_results = _flatten(three_layer_results)
         need_vector_search = False
         target_layers: List[str] = []
+
+        # -------------------------
+        # 2) LLM decision + LLM redis-filter (parallel)
+        # -------------------------
+        async def _filter_redis_layers(query_text: str, layered: Dict[str, List[Dict[str, Any]]]) -> Dict[
+            str, List[Dict[str, Any]]]:
+            user_payload = {
+                "query": query_text,
+                "profile": layered.get("profile", []),
+                "episodic": layered.get("episodic", []),
+                "working": layered.get("working", []),
+            }
+
+            resp = await _to_thread_limited(
+                self.llm.generate_response,
+                messages=[
+                    {"role": "system", "content": REDIS_LAYER_FILTER_PROMPT},
+                    {"role": "user", "content": json.dumps(user_payload, ensure_ascii=False)},
+                ],
+                response_format={"type": "json_object"},
+            )
+            resp = remove_code_blocks(resp)
+            obj = json.loads(resp) if resp.strip() else {}
+
+            def _safe_list(x: Any) -> List[Dict[str, Any]]:
+                return x if isinstance(x, list) else []
+
+            return {
+                "profile": _safe_list(obj.get("profile")),
+                "episodic": _safe_list(obj.get("episodic")),
+                "working": _safe_list(obj.get("working")),
+            }
+
         if REDIS_STORE_AVAILABLE and user_id:
             try:
-                # 格式化三层记忆结果用于LLM判断
-                profile_memories = "\n".join([
-                    f"  - {r.get('memory', '')[:200]}..."
-                    for r in three_layer_results["profile"][:1]  # profile 通常一条就够
-                ]) if three_layer_results["profile"] else "  None"
+                profile_memories = "\n".join(
+                    [f"  - {r.get('memory', '')[:200]}..." for r in three_layer_results["profile"][:1]]
+                ) if three_layer_results["profile"] else "  None"
 
-                episodic_memories = "\n".join([
-                    f"  - {r.get('memory', '')[:200]}..."
-                    for r in three_layer_results["episodic"][:5]
-                ]) if three_layer_results["episodic"] else "  None"
+                episodic_memories = "\n".join(
+                    [f"  - {r.get('memory', '')[:200]}..." for r in three_layer_results["episodic"][:5]]
+                ) if three_layer_results["episodic"] else "  None"
 
-                working_memories = "\n".join([
-                    f"  - {r.get('memory', '')[:200]}..."
-                    for r in three_layer_results["working"][:5]
-                ]) if three_layer_results["working"] else "  None"
+                working_memories = "\n".join(
+                    [f"  - {r.get('memory', '')[:200]}..." for r in three_layer_results["working"][:5]]
+                ) if three_layer_results["working"] else "  None"
+
                 decision_prompt = f"""Query: {query}
 
-Redis Memories (recent items, no similarity scores):
+    Redis Memories (recent items, no similarity scores):
 
-- Profile Memory:
-{profile_memories}
+    - Profile Memory:
+    {profile_memories}
 
-- Episodic Memory:
-{episodic_memories}
+    - Episodic Memory:
+    {episodic_memories}
 
-- Working Memory:
-{working_memories}
+    - Working Memory:
+    {working_memories}
 
-Total Redis Results: {len(all_redis_results)}
-"""
+    Total Redis Results: {len(all_redis_results)}
+    """
+                current_date = datetime.now().strftime("%Y-%m-%d")
 
-                decision_response = await asyncio.to_thread(
+                decision_task = _to_thread_limited(
                     self.llm.generate_response,
                     messages=[
-                        {"role": "system", "content": VECTOR_SEARCH_DECISION_PROMPT},
-                        {"role": "user", "content": decision_prompt}
+                        {"role": "system", "content": VECTOR_SEARCH_DECISION_PROMPT.format(current_date=current_date)},
+                        {"role": "user", "content": decision_prompt},
                     ],
                     response_format={"type": "json_object"},
                 )
+                filter_task = _filter_redis_layers(query, three_layer_results)
+
+                decision_response, filtered_three_layer_results = await asyncio.gather(decision_task, filter_task)
+
+                three_layer_results = filtered_three_layer_results
+                all_redis_results = _flatten(three_layer_results)
+
                 decision_response = remove_code_blocks(decision_response)
                 decision_obj = json.loads(decision_response) if decision_response.strip() else {}
+
                 need_vector_search = bool(decision_obj.get("need_vector_search", False))
                 target_layers = decision_obj.get("target_layers") or []
                 target_layers = [l for l in target_layers if isinstance(l, str)]
-                # 只允许 profile/episodic（working 不查向量库）
-                target_layers = [l for l in target_layers if l in ("profile", "episodic")]
-                # 去重保序
+                target_layers = [l for l in target_layers if l in ("profile", "episodic")]  # working never vector
+
+                # de-dup keep order
                 seen = set()
                 target_layers = [l for l in target_layers if not (l in seen or seen.add(l))]
+
                 if need_vector_search and not target_layers:
                     target_layers = ["profile", "episodic"]
+
+                if (not need_vector_search) and (len(all_redis_results) < 2):
+                    need_vector_search = True
+                    if not target_layers:
+                        target_layers = ["profile", "episodic"]
+
                 if need_vector_search:
                     logger.info(
                         f"LLM decided to search vector store on layers={target_layers}: {decision_obj.get('reason')}")
                 else:
                     logger.info(f"LLM decided Redis results are sufficient: {decision_obj.get('reason')}")
+
             except Exception as e:
-                logger.exception("Error in LLM decision", exc_info=e)
-                # 如果Redis结果很少，默认需要向量搜索
+                logger.exception("Error in LLM decision/filter", exc_info=e)
+                all_redis_results = _flatten(three_layer_results)
                 need_vector_search = len(all_redis_results) < 3
                 if need_vector_search and not target_layers:
                     target_layers = ["profile", "episodic"]
 
-        # 如果不需要向量搜索，只返回 Redis 的三层记忆结构
+        # -------------------------
+        # 3) If no vector search, cancel embeddings and return redis (filtered)
+        # -------------------------
         if not need_vector_search:
+            if embed_task is not None and not embed_task.done():
+                embed_task.cancel()
             return {
                 "profile": three_layer_results["profile"],
                 "episodic": three_layer_results["episodic"],
                 "working": three_layer_results["working"],
             }
 
-        # 需要向量搜索，按 LLM 决策的层级进行向量数据库查询
-        embeddings = await asyncio.to_thread(self.embedding_model.embed, query, "search")
-        base_filters: Dict[str, Any] = deepcopy(filters or {})
+        # -------------------------
+        # 4) Need vector search -> await embeddings (only now)
+        # -------------------------
+        if embed_task is None:
+            embeddings = await _to_thread_limited(self.embedding_model.embed, query, "search")
+        else:
+            embeddings = await embed_task
 
-        # 为三层记忆分别准备向量结果容器
-        vector_layer_results: Dict[str, List[Dict[str, Any]]] = {
-            "profile": [],
-            "episodic": [],
-            "working": [],
-        }
+        base_filters: Dict[str, Any] = deepcopy(filters or {})
 
         promoted_payload_keys = ["user_id", "agent_id", "run_id", "actor_id", "role"]
         core_and_promoted_keys = {"data", "hash", "created_at", "updated_at", "id", *promoted_payload_keys}
 
-        # 逐层进行向量检索（working 依然只使用 Redis，不做向量检索）
-        for layer in target_layers:
-            if layer not in ("profile", "episodic", "working"):
-                continue
-            if layer == "working":
-                # working 只在 Redis 中存在，不额外查向量库
-                continue
+        vector_layer_results: Dict[str, List[Dict[str, Any]]] = {"profile": [], "episodic": [], "working": []}
+
+        async def _search_single_layer(layer: str) -> Tuple[str, List[Dict[str, Any]]]:
+            if layer not in ("profile", "episodic"):
+                return layer, []
 
             effective_filters = deepcopy(base_filters)
-            # 底层向量库里，mem_type 按三层命名进行区分
             effective_filters["mem_type"] = layer
 
-            layer_vector_memories = await asyncio.to_thread(
+            # Vector search (blocking)
+            layer_vector_memories = await _to_thread_limited(
                 self.vector_store.search,
                 query=query,
                 vectors=embeddings,
-                limit=limit,
+                limit=limit*2,
                 filters=effective_filters if effective_filters else None,
             )
+
+            # Time filter for episodic (keep your behavior; pass limit if you want to cap)
+            if layer == "episodic":
+                # NOTE: this may apply recency bias even if query has no explicit time,
+                # depending on use_recency_when_no_time default.
+                layer_vector_memories = self._filter_and_rank_by_time(
+                    memories=layer_vector_memories,
+                    query=query,
+                    reference_time=reference_time,
+                    limit=limit,
+                )
+
+            formatted: List[Dict[str, Any]] = []
+            cache_tasks: List[asyncio.Task] = []
 
             for mem in layer_vector_memories:
                 memory_item_dict = MemoryItem(
@@ -2720,6 +3134,7 @@ Total Redis Results: {len(all_redis_results)}
                     score=mem.score,
                 ).model_dump()
 
+                # promoted keys
                 for key in promoted_payload_keys:
                     if key in mem.payload:
                         memory_item_dict[key] = mem.payload[key]
@@ -2728,53 +3143,78 @@ Total Redis Results: {len(all_redis_results)}
                 if additional_metadata:
                     memory_item_dict["metadata"] = additional_metadata
 
-                if threshold is None or mem.score >= threshold:
-                    # 标注来源为 vector
+                if threshold is None or (mem.score is not None and mem.score >= threshold):
                     memory_item_dict.setdefault("mem_type", layer)
                     memory_item_dict["source"] = "vector"
-                    vector_layer_results[layer].append(memory_item_dict)
+                    formatted.append(memory_item_dict)
 
-                    # 如果是 episodic 记忆，缓存到 Redis
+                    # async cache episodic
                     if layer == "episodic" and REDIS_STORE_AVAILABLE and user_id:
-                        try:
-                            await redis_store.add_episodic_to_cache(user_id, memory_item_dict.get("memory", ""))
-                        except Exception as e:
-                            logger.warning(f"[episodic] Failed to cache to redis: {e}")
+                        cache_tasks.append(asyncio.create_task(
+                            redis_store.add_episodic_to_cache(user_id, memory_item_dict.get("memory", ""))
+                        ))
 
-        # 合并 Redis 与向量结果，但保持分层结构、不再按 score 全局排序
+            if cache_tasks:
+                # don't fail the whole request if cache fails
+                await asyncio.gather(*cache_tasks, return_exceptions=True)
+
+            return layer, formatted
+
+        # -------------------------
+        # 5) Vector searches per-layer in parallel
+        # -------------------------
+        search_tasks = [asyncio.create_task(_search_single_layer(layer)) for layer in target_layers]
+        layer_results = await asyncio.gather(*search_tasks)
+
+        for layer, items in layer_results:
+            if layer in vector_layer_results:
+                vector_layer_results[layer] = items
+
+        # -------------------------
+        # 6) Rerank per-layer in parallel (vector items only)
+        # -------------------------
+        if rerank and self.reranker:
+            async def _rerank_single_layer(layer: str) -> Tuple[str, List[Dict[str, Any]]]:
+                items = vector_layer_results.get(layer) or []
+                if not items:
+                    return layer, items
+                try:
+                    feed_k = min(len(items), max(limit * 3, limit))
+                    reranked = await _to_thread_limited(self.reranker.rerank, query, items[:feed_k], limit)
+                    return layer, reranked[:limit]
+                except Exception as e:
+                    logger.warning(f"[{layer}] rerank failed, keep original vector order: {e}")
+                    return layer, items
+
+            rr_tasks = []
+            for layer in ("profile", "episodic"):
+                if vector_layer_results.get(layer):
+                    rr_tasks.append(asyncio.create_task(_rerank_single_layer(layer)))
+
+            if rr_tasks:
+                rr_results = await asyncio.gather(*rr_tasks)
+                for layer, items in rr_results:
+                    vector_layer_results[layer] = items
+
+        # -------------------------
+        # 7) Merge vector + redis (sync; cheap)
+        # -------------------------
         def _merge_layer(redis_list: List[Dict[str, Any]], vector_list: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-            """按插入顺序合并同一层的 redis + vector 结果，并按 memory 文本去重。"""
             merged: List[Dict[str, Any]] = []
             seen_texts = set()
-            # 先 Redis，再 Vector，维持直觉上的优先级
-            for item in (*redis_list, *vector_list):
+            # vector first, then redis
+            for item in (*vector_list, *redis_list):
                 text = item.get("memory", "")
                 if not text or text in seen_texts:
                     continue
                 seen_texts.add(text)
                 merged.append(item)
-            return merged[:limit] if limit and limit > 0 else merged
-
-        async def _rerank_layer(layer_items: list[dict], topk: int) -> list[dict]:
-            # 你的 reranker 可能返回“重排后的 list[dict]”，也可能返回“(item, score)”之类
-            # 这里按最常见：返回同结构的 list
-            return await asyncio.to_thread(self.reranker.rerank, query, layer_items, topk)
-
-
-        if rerank and self.reranker:
-            for layer in ("profile", "episodic"):
-                items = vector_layer_results.get(layer) or []
-                if items:
-                    try:
-                        feed_k = min(len(items), max(limit * 3, limit))
-                        vector_layer_results[layer] = (await _rerank_layer(items[:feed_k], limit))[:limit]
-                    except Exception as e:
-                        logger.warning(f"[{layer}] rerank failed, keep original vector order: {e}")
+            return merged
 
         return {
-            "profile": _merge_layer(three_layer_results["profile"], vector_layer_results["profile"]),
-            "episodic": _merge_layer(three_layer_results["episodic"], vector_layer_results["episodic"]),
-            "working": _merge_layer(three_layer_results["working"], vector_layer_results["working"]),
+            "profile": _merge_layer(three_layer_results.get("profile", []), vector_layer_results.get("profile", [])),
+            "episodic": _merge_layer(three_layer_results.get("episodic", []), vector_layer_results.get("episodic", [])),
+            "working": _merge_layer(three_layer_results.get("working", []), vector_layer_results.get("working", [])),
         }
 
     def _process_metadata_filters(self, metadata_filters: Dict[str, Any]) -> Dict[str, Any]:

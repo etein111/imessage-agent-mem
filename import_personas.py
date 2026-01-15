@@ -8,7 +8,7 @@ from pathlib import Path
 # 添加项目根目录到Python路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from app import prompt_service
+from src.app import prompt_service
 
 
 def import_existing_personas():

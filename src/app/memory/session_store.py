@@ -7,7 +7,7 @@ import json
 import os
 from typing import List
 
-from app.config import MEMORY_FILE, MEMORY_MAX_ITEMS
+from src.app.config import MEMORY_FILE, MEMORY_MAX_ITEMS
 
 
 def load_store() -> dict:

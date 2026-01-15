@@ -96,14 +96,14 @@ class RedisMemoryStore:
         key = self._get_episodic_key(user_id)
         await self.client.rpush(key, json.dumps(episodic_memory, ensure_ascii=False))
         await self.client.expire(key, self.ttl)
-        await self.client.ltrim(key, -50, -1)
+        await self.client.ltrim(key, -20, -1)
 
-    async def get_episodic_cache_recent(self, user_id: str, limit: int = 10) -> List[str]:
+    async def get_episodic_cache_recent(self, user_id: str, limit: int = 20) -> List[str]:
         key = self._get_episodic_key(user_id)
         raw = await self.client.lrange(key, -limit, -1)
         return [json.loads(m) if isinstance(m, str) else json.loads(m.decode('utf-8')) for m in raw]
 
-    async def get_working_memories(self, user_id, limit: int = 10) -> List[Dict]:
+    async def get_working_memories(self, user_id, limit: int = 20) -> List[Dict]:
         key = self._get_working_key(user_id)
         raw = await self.client.lrange(key, -limit, -1)
         return [json.loads(m) if isinstance(m, str) else json.loads(m.decode('utf-8')) for m in raw]

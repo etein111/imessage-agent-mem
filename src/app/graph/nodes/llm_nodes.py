@@ -217,9 +217,6 @@ async def plan_goal_node(state: PipelineState, config=None) -> Dict[str, Any]:
     model = await get_model()
     t_get_model1 = time.perf_counter()
 
-    emotion = state.get("current_emotion", "neutral")
-    dialogue_type = state.get("dialogue_type", "small_talk")
-    short_term_memory = state.get("short_term_memory", [])
     messages = state.get("messages", [])
 
     # 找最后一条 HumanMessage
@@ -231,30 +228,17 @@ async def plan_goal_node(state: PipelineState, config=None) -> Dict[str, Any]:
             break
     t_find1 = time.perf_counter()
 
-    # 拼 memory_context
-    t_mem0 = time.perf_counter()
-    recent_msgs = short_term_memory[-3:] if short_term_memory else []
-    if recent_msgs:
-        memory_context = "\n".join([f"{msg.type}: {msg.content}" for msg in recent_msgs])
-    else:
-        memory_context = "无历史"
-    t_mem1 = time.perf_counter()
 
     prompt = f"""你是一个对话策略规划专家。
-【用户情绪】{emotion}
-【对话类型】{dialogue_type}
-【最近记忆】{memory_context}
+
 【当前消息】{current_user_msg}
 
 请判断:
 1. 是否需要调用工具? (weather, time, talk_asset, 或 none)
-2. 对话目标是什么? (cheer_up, collect_profile, deep_talk, casual_chat, task_help等)
-3. 具体指导建议
 
 输出格式:
 tool: <工具名或none>
-goal: <目标>
-instruction: <具体指导>"""
+"""
 
     # 关键：LLM 调用耗时
     t_llm0 = time.perf_counter()
@@ -266,28 +250,28 @@ instruction: <具体指导>"""
     # 解析耗时
     t_parse0 = time.perf_counter()
     tool_to_call = None
-    current_goal = "casual_chat"
-    goal_instruction = ""
 
     for line in content.split("\n"):
         if "tool:" in line:
             tool = line.split(":")[-1].strip()
             if tool not in ["none", "无"]:
                 tool_to_call = tool
-        elif "goal:" in line:
-            current_goal = line.split(":")[-1].strip()
-        elif "instruction:" in line:
-            goal_instruction = line.split(":")[-1].strip()
     t_parse1 = time.perf_counter()
 
     t1 = time.perf_counter()
+    logger.info(
+        "[plan_goal_raw_response]\n"
+        "type=%s\n"
+        "response=%r",
+        type(response),
+        response
+    )
 
     logger.info(
-        "[plan_goal_timing] total=%.3fs | get_model=%.3fs | find_msg=%.3fs | build_mem=%.3fs | llm=%.3fs | parse=%.3fs | prompt_len=%d | resp_len=%d",
+        "[plan_goal_timing] total=%.3fs | get_model=%.3fs | find_msg=%.3fs | llm=%.3fs | parse=%.3fs | prompt_len=%d | resp_len=%d",
         (t1 - t0),
         (t_get_model1 - t_get_model0),
         (t_find1 - t_find0),
-        (t_mem1 - t_mem0),
         (t_llm1 - t_llm0),
         (t_parse1 - t_parse0),
         len(prompt),
@@ -295,8 +279,6 @@ instruction: <具体指导>"""
     )
 
     return {
-        "current_goal": current_goal,
-        "goal_instruction": goal_instruction,
         "tool_to_call": tool_to_call
     }
 

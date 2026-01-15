@@ -97,7 +97,7 @@ export PERSONA_NAME=yunduo   # 使用"云朵"人设（默认）
 - `PipelineState` - 完整功能 (V2-V6)
 
 ```python
-from app.graph import PipelineState, create_initial_state
+from src.app import PipelineState, create_initial_state
 
 # 创建初始状态
 state = create_initial_state(
@@ -118,7 +118,7 @@ state = create_initial_state(
 | `routing_nodes.py` | 条件路由 | V3-V6 |
 
 ```python
-from app.graph import (
+from src.app import (
     load_context_node,
     generate_reply_simple_node,
     safety_in_node,
@@ -130,7 +130,7 @@ from app.graph import (
 主聊天工作流集成所有功能：
 
 ```python
-from app.graph import graph
+from src.app import graph
 
 # 使用图
 result = await graph.ainvoke({
@@ -145,7 +145,7 @@ result = await graph.ainvoke({
 统一管理所有配置：
 
 ```python
-from app import (
+from src.app import (
     get_llm_model,  # 获取LLM模型
     get_system_prompt,  # 获取当前人设
     MEMORY_MAX_ITEMS,  # 记忆保留数量
@@ -157,7 +157,7 @@ from app import (
 外部工具统一接口：
 
 ```python
-from app import run_tool
+from src.app import run_tool
 
 # 调用工具
 result = run_tool("get_weather", {"city": "北京"})
@@ -169,7 +169,7 @@ result = run_tool("get_time", {})
 记忆管理类：
 
 ```python
-from app import SimpleMemoryStore
+from src.app import SimpleMemoryStore
 
 # 获取记忆
 memories = SimpleMemoryStore.get_short_term_memory("user123", "conv456")
@@ -192,8 +192,8 @@ from simple_chat import get_model
 from memory_store import SimpleMemoryStore
 
 # 新版本
-from app.graph import get_model
-from app import SimpleMemoryStore
+from src.app import get_model
+from src.app import SimpleMemoryStore
 ```
 
 2. **配置管理**
@@ -203,7 +203,7 @@ from app import SimpleMemoryStore
 SYSTEM_PROMPT = """..."""
 
 # 新版本 - 配置化
-from app import get_system_prompt
+from src.app import get_system_prompt
 
 prompt = get_system_prompt()  # 自动加载人设
 ```
@@ -215,7 +215,7 @@ prompt = get_system_prompt()  # 自动加载人设
 from pipeline_chat_v6 import graph
 
 # 新版本
-from app.graph import graph
+from src.app import graph
 ```
 
 ---

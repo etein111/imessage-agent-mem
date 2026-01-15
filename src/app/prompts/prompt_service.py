@@ -6,7 +6,7 @@ import sqlite3
 from typing import List, Optional, Dict
 from pathlib import Path
 
-from app.config import BASE_DIR
+from src.app.config import BASE_DIR
 
 
 # 数据库文件路径

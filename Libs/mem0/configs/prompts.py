@@ -82,10 +82,6 @@ Types of Information to Remember:
 6. Store Personal Preferences: Keep track of likes, dislikes, and specific preferences in various categories such as food, products, activities, and entertainment.
    Keep track of favorite books, movies, brands, and other miscellaneous details that the user shares.
 7. Remember Activity and Service Preferences: Recall preferences for dining, travel, hobbies, and other services.
-8. Capture explicitly stated or consistently implied values, priorities, or long-term trade-offs that guide the user's decisions across life domains.
-9. Identify recurring behavioral patterns or decision-making styles that appear consistently across different situations, excluding temporary emotional reactions.
-10. Capture stable information that does not clearly belong to other categories but remains relevant long-term.
-
 ────────────────────────────────────────
 WHAT MUST NOT BE EXTRACTED
 ────────────────────────────────────────
@@ -127,10 +123,7 @@ Each fact represents ONE COHERENT memory of user and MUST contain the following 
     "relationship"     #关系         
     "education"        #教育         
     "health"           #长期健康     
-    "preference"       #稳定偏好       
-    "profile_value"    #价值观 / 长期取向 
-    "profile_trait"    #行为模式       
-    "misc"             #兜底
+    "preference"       #稳定偏好        
   ]
 
 ────────────────────────────────────────
@@ -209,29 +202,7 @@ Output:
   ]
 }}
 
-User: I usually like to think things through carefully before making decisions.
-Assistant: That makes sense.
-Output:
-{{
-  "facts": [
-    {{
-      "text": "The user tends to make decisions after careful consideration",
-      "mem_category": "profile_trait"
-    }}
-  ]
-}}
 
-User: I value long-term growth more than short-term rewards.
-Assistant: That's a thoughtful perspective.
-Output:
-{{
-  "facts": [
-    {{
-      "text": "The user prioritizes long-term growth over short-term rewards",
-      "mem_category": "profile_value"
-    }}
-  ]
-}}
 
 User: I don't really enjoy crowded places or noisy environments.
 Assistant: I understand.
@@ -257,19 +228,6 @@ Output:
     {{
       "text": "The user has a cousin named Kevin Chen",
       "mem_category": "relationship"
-    }}
-  ]
-}}
-
-
-User: I often break complex problems into smaller steps when working on them.
-Assistant: That's a useful approach.
-Output:
-{{
-  "facts": [
-    {{
-      "text": "The user tends to break complex problems into smaller steps",
-      "mem_category": "profile_trait"
     }}
   ]
 }}
@@ -372,7 +330,77 @@ IMPORTANT EXTRACTION RULES
 - Include a time expression if the user explicitly provides one; otherwise use null
 - Do NOT remove time expressions here (time is a core property of episodic memory)
 - Do NOT over-infer beyond the user's explicit statements
+────────────────────────────────────────
+CRITICAL HARD RULE: FUTURE TIME EXCLUSION
+────────────────────────────────────────
+Episodic memory ONLY stores events that have ALREADY happened or are clearly completed.
 
+You MUST NOT extract any fact if:
+- The time expression refers to the FUTURE, OR
+- The sentence describes an intention, plan, expectation, or possibility of a future event.
+
+The following are ALWAYS considered FUTURE and MUST BE EXCLUDED:
+- 明天, 明晚, 后天
+- 下周, 下星期, 下个月, 明年
+- X天后 / X周后 / X个月后 / X年后
+- 下周一 / 下周五 / 下星期二 (any future weekday reference)
+- Any date later than today's date
+- Any sentence containing future-intent markers, including but not limited to:
+  ["要", "准备", "打算", "计划", "将要", "会", "可能会", "预计", "安排", "想", "希望"]
+
+If a FUTURE time token or future intent appears,
+you MUST return NO episodic fact for that sentence.
+
+────────────────────────────────────────
+SPECIAL RULE FOR "今天"
+────────────────────────────────────────
+The time expression "今天" MAY be extracted ONLY IF:
+- The described experience has already happened earlier today, OR
+- The user clearly describes a completed or ongoing state/event today.
+
+"今天" MUST NOT be extracted if:
+- The sentence describes something that has not yet happened today
+- The sentence contains future-intent markers such as:
+  ["要", "准备", "打算", "待会", "等会", "一会儿", "稍后"]
+
+────────────────────────────────────────
+TIME TOKEN POLICY (ALIGNED WITH PARSER)
+────────────────────────────────────────
+You MUST extract time anchors whenever the user's message contains
+a PAST time expression that is parsable by our Chinese time parser.
+
+Parsable PAST time tokens include:
+
+A) Day-level:
+- 今天 (ONLY if already happened), 昨日, 昨天, 昨晚, 前天
+
+B) Week-level:
+- 上上周 / 上上星期
+- 上周 / 上星期
+- 本周 / 这周 / 这星期 / 本星期
+- 上周五 / 上上周二 / 本周三
+- 周五 / 星期二 (defaults to most recent past occurrence)
+
+C) Month-level:
+- 上月 / 上个月
+- 本月 / 这个月 / 这月 (ONLY if already happened portion)
+- 三月 / 3月 (biased to most recent past occurrence)
+- 去年三月 / 今年三月
+- 2025年三月 / 2025年3月
+- 3月12日 (biased to past if would be future)
+
+D) Year-level:
+- 去年
+- 今年 (ONLY if describing already occurred portion)
+- 2025年
+
+E) Relative PAST quantities:
+- X天前 / X周前 / X个月前 / X年前
+  (X supports Arabic digits, Chinese numerals, and "半")
+
+If multiple time expressions appear, choose ONE best time using this priority:
+year-month-day > year-month > relative-year+month > week+weekday > day-token >
+relative-quantity > month-only > weekday-only > year-only.
 ────────────────────────────────────────
 IMPORTANT OUTPUT FORMAT
 ────────────────────────────────────────
@@ -1481,24 +1509,93 @@ OUTPUT CONSTRAINTS
 Return JSON only.
 """
 
-VECTOR_SEARCH_DECISION_PROMPT = """You are a Memory Retrieval Decision Maker. Determine whether vector database search is needed.
+VECTOR_SEARCH_DECISION_PROMPT = """You are a Memory Retrieval Decision Maker with TIME-AWARE episodic memory evaluation.
+
+CRITICAL PROHIBITIONS:
+- STRICTLY FORBID vector database searches for: emotions, mood, stress, current plans, todos, intentions, worries, dilemmas, or ANY short-term mental state
+- These short-term/experiential memories exist ONLY in Redis working/session layer, NEVER in the vector database
+- Even if Redis working/session memory is empty, DO NOT search vector DB for these topics
+- If user query is primarily about feelings, current state, or future plans, MUST set need_vector_search=false
 
 Given:
 - User Query: the search query
+- Current Date: {current_date}
 - Top Redis Memories from Three Layers:
-  * Profile Memory: long-term stable user profile
-  * Episodic Memory: past events
-  * Working Memory: current plans and emotions
+  * Profile Memory: long-term stable user profile (with metadata.time if applicable)
+  * Episodic Memory: past events (EACH with metadata.time or time field)
+  * Working/Session Memory: current plans, emotions, temporary states
 
-Return JSON: {
+Return JSON: {{
   "need_vector_search": true/false,
   "reason": "...",
-  "target_layers": ["profile" | "episodic" | "working"]    // subset of these, can be empty list if no vector search
-}
+  "target_layers": ["profile" | "episodic"]    // subset of these, can be empty list if no vector search
+}}
+
+TIME-AWARE EPISODIC EVALUATION RULES (CRITICAL):
+
+1. EXTRACT TEMPORAL CONTEXT FROM USER QUERY:
+   - Does the query mention specific time expressions? (yesterday, last week, 2020, last March, etc.)
+   - Does the query imply a particular time period? (recent past, distant past, specific date)
+   - Current date: {current_date}
+
+2. COMPARE QUERY TIME with REDIS EPISODIC TIME:
+   - Check the time field or metadata.time in each Redis episodic memory
+   - Calculate temporal distance: does the memory's time match the query's temporal intent?
+   - Examples:
+     * Query: "What did I do last March?" + Redis episodic time: "2025-03-15" → MISMATCH if current is 2026-01
+     * Query: "Where did I go yesterday?" + Redis episodic time: "2024-12-15" → MISMATCH if current is 2026-01-14
+     * Query: "What happened last week?" + Redis episodic time: "2 months ago" → MISMATCH
+
+3. TEMPORAL MISMATCH = VECTOR SEARCH TRIGGER:
+   - EVEN IF Redis episodic memories have high semantic similarity to the query
+   - IF the time periods DO NOT align with the query's temporal context
+   - THEN recommend vector search for episodic layer
+   - Reason must explicitly mention: "Redis episodic memories exist but time mismatch (query expects X, Redis has Y)"
+
+GENERAL DECISION RULES:
+
+1. Profile Memory Queries:
+   - If Redis profile memories are relevant and recent, no vector search needed
+   - If Redis profile is empty or irrelevant, search vector DB for profile layer
+
+2. Episodic Memory Queries (TIME-AWARE):
+   - Step 1: Check if Redis episodic memories exist and are semantically relevant
+   - Step 2: EXTRACT time from query and COMPARE with Redis episodic time fields
+   - Step 3: If time MATCHES (same period, aligned context), no vector search needed
+   - Step 4: If time MISMATCHES or Redis episodic is empty/irrelevant, search vector DB for episodic
+
+3. Working/Session Queries:
+   - STRICTLY FORBID vector database search
+   - These only exist in Redis working/session layer
+   - If Redis working is empty, return empty results (do NOT search vector DB)
+
+BEHAVIORAL GUARDRAILS:
+- Be CONSERVATIVE with vector search: only recommend when clearly necessary
+- Prioritize Redis results when they are both semantically AND temporally aligned
+- The vector database contains ONLY long-term, objective, verifiable facts:
+  * Profile: identity, background, long-term preferences, stable skills
+  * Episodic: past events with time/place/people/outcomes
+- The vector database MUST NOT contain: emotions, mood, stress, current plans, intentions, or any short-term state
+
+Today's date is: {current_date}
+"""
+
+REDIS_LAYER_FILTER_PROMPT = """
+You are a strict relevance filter for a layered memory store.
+
+Input: a JSON object with keys: profile, episodic, working.
+Each value is a list of memory items (dict). Each item has fields like:
+- id, memory, mem_type, source, metadata...
+
+Task:
+Given the user's query, REMOVE items that are not helpful/relevant to answering the query.
+Return the SAME JSON structure (profile/episodic/working), but only with kept items.
 
 Rules:
-- If Redis memories from any layer are highly relevant (high similarity scores) and sufficient to answer the query, usually no vector search needed
-- If Redis memories are empty or have very low relevance across all layers, vector search likely needed
-- Consider the query type: profile queries need profile memory, past event queries need episodic memory, current plans need working memory
-- Be conservative: only recommend vector search when Redis results are clearly insufficient to answer the query
-- Use target_layers to indicate which memory layers should additionally query the vector database when need_vector_search=true."""
+- Be strict: keep only items that directly help answer the query or provide required context.
+- Do not rewrite memory texts. Do not add new items. Only drop items.
+- Keep ordering among retained items.
+- If none are relevant in a layer, return an empty list for that layer.
+Return ONLY valid JSON.
+"""
+

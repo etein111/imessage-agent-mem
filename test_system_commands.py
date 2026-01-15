@@ -16,7 +16,7 @@ async def test_system_commands():
     print("=" * 70)
     
     # 导入工作流
-    from app.graph import graph
+    from src.app import graph
     
     # 配置
     thread_id = "test-system-commands-123"

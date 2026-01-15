@@ -157,14 +157,14 @@ async def save_memory_node(state: PipelineState, config=None) -> Dict[str, Any]:
 
     if overflow_msgs:
         print(f"达到 20 轮对话，归档旧的 10 轮...")
-        # 获取旧摘要
-        old_summary = await redis_store.get_summary(user_id)
-        # 生成新摘要 (旧摘要 + 溢出的10轮 -> 新摘要)
-        new_summary = await consolidate_memory_node(overflow_msgs, old_summary)
-
-        if new_summary:
-            await redis_store.update_summary(user_id, new_summary)
-            print(f"摘要已更新: {new_summary[:20]}...")
+        # # 获取旧摘要
+        # old_summary = await redis_store.get_summary(user_id)
+        # # 生成新摘要 (旧摘要 + 溢出的10轮 -> 新摘要)
+        # new_summary = await consolidate_memory_node(overflow_msgs, old_summary)
+        #
+        # if new_summary:
+        #     await redis_store.update_summary(user_id, new_summary)
+        #     print(f"摘要已更新: {new_summary[:20]}...")
 
     # 不阻塞主流程：后台写 mem0
         asyncio.create_task(_persist_overflow_to_mem0(user_id, overflow_msgs))

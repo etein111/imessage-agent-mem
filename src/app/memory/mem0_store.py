@@ -103,5 +103,8 @@ class AsyncMem0Adapter:
 
 # 工厂函数：只在入口调用一次
 async def build_mem0_adapter() -> AsyncMem0Adapter:
+    import json
+    print("MEM0_CONFIG.graph_store =", json.dumps(MEM0_CONFIG.get("graph_store"), indent=2, ensure_ascii=False))
     mem0 = await AsyncMemory.from_config(MEM0_CONFIG)
+
     return AsyncMem0Adapter(mem0)

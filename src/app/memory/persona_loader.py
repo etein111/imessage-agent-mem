@@ -7,7 +7,7 @@ import os
 from pathlib import Path
 from typing import Optional
 
-from app.config import PERSONAS_DIR
+from src.app.config import PERSONAS_DIR
 
 
 class PersonaLoader:

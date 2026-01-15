@@ -79,9 +79,9 @@ def get_system_prompt() -> str:
     获取当前人设的系统提示词
     通过环境变量 PERSONA_NAME 指定
     """
-    from app.memory.persona_loader import load_persona_from_env
-    
-    return load_persona_from_env(default="test")
+    from src.app.memory.persona_loader import load_persona_from_env
+
+    return load_persona_from_env(default="youci")
 
 
 # ==================== Google Cloud 配置 ====================
@@ -107,33 +107,40 @@ def get_redis_config():
         "decode_responses": True
     }
 
-api_key = os.getenv("API_KEY")
-base_url = os.getenv("BASE_URL")
-model_name = os.getenv("CHAT_MODEL")
+os.environ["OPENAI_API_KEY"] = "sk-NNbyUHXGMlsL2cEhB22bB00f1b1d477e989d034dF7D03316"  # 建议不要硬编码真实 key
+
 MEM0_CONFIG ={
-    "llm": {
-        "provider": "deepseek",
-        "config": {
-            "model": model_name,
-            "temperature": 0.2,
-            "max_tokens": 2000,
-            "top_p": 1.0,
-            "api_key": api_key,
-            "deepseek_base_url": base_url
-        }
-    },
-    "embedder": {
-        "provider": "ollama",
-        "model": "mxbai-embed-large"
-    },
     "vector_store": {
         "provider": "qdrant",
         "config": {
-            "collection_name": "mem0_new",
-            "embedding_model_dims": 768,
             "host": "localhost",
             "port": 6333,
-        }
+        },
     },
-    "reset_vector_store": True
+    "embedder": {
+        "provider": "openai",
+        "config": {
+            "api_key": os.environ["OPENAI_API_KEY"],
+            "openai_base_url": "https://aihubmix.com/v1",
+            "model": "text-embedding-3-small",
+        },
+    },
+    "llm": {
+        "provider": "openai",
+        "config": {
+            "openai_base_url": "https://aihubmix.com/v1",
+            "model": "gpt-4o-mini",
+            "api_key": os.environ["OPENAI_API_KEY"],
+        },
+    },
+    "graph_store": {
+         "provider": "neo4j",
+         "config": {
+             "url": "bolt://localhost:7687",
+             "username": "neo4j",
+             "password": "unused",
+             "database": "neo4j",
+         }
+    },
+
 }
